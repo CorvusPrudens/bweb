@@ -93,12 +93,20 @@ fn inject_element(
 pub struct A;
 
 #[derive(Debug, Component)]
+#[require(Element("video"))]
+pub struct Video;
+
+#[derive(Debug, Component)]
 #[require(Element("body"))]
 pub struct Body;
 
 #[derive(Debug, Component)]
 #[require(Element("div"))]
 pub struct Div;
+
+#[derive(Debug, Component)]
+#[require(Element("nav"))]
+pub struct Nav;
 
 #[derive(Debug, Component)]
 #[require(Element("header"))]
