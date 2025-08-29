@@ -15,10 +15,13 @@ impl Plugin for AttributePlugin {
             Width::plugin,
             Height::plugin,
             Src::plugin,
+            Target::plugin,
+            Tabindex::plugin,
             Muted::plugin,
             Autoplay::plugin,
             Loop::plugin,
             Disabled::plugin,
+            Download::plugin,
         ));
     }
 }
@@ -27,6 +30,20 @@ macro_rules! attribute {
     ($ty:ident, $attr:literal) => {
         #[derive(Debug, Component)]
         pub struct $ty(Cow<'static, str>);
+
+        impl core::ops::Deref for $ty {
+            type Target = str;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl AsRef<str> for $ty {
+            fn as_ref(&self) -> &str {
+                &self.0
+            }
+        }
 
         impl $ty {
             pub fn new(attribute: &'static str) -> Self {
@@ -73,6 +90,8 @@ attribute! {Style, "style"}
 attribute! {Width, "width"}
 attribute! {Height, "height"}
 attribute! {Src, "src"}
+attribute! {Target, "target"}
+attribute! {Tabindex, "tabindex"}
 
 macro_rules! boolean_attribute {
     ($ty:ident, $attr:literal) => {
@@ -118,3 +137,4 @@ boolean_attribute! {Muted, "muted"}
 boolean_attribute! {Autoplay, "autoplay"}
 boolean_attribute! {Loop, "loop"}
 boolean_attribute! {Disabled, "disabled"}
+boolean_attribute! {Download, "download"}

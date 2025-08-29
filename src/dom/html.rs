@@ -1,4 +1,4 @@
-use super::{Document, DomSystems};
+use super::{DomStartupSystems, DomSystems};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::{component::HookContext, prelude::*, world::DeferredWorld};
@@ -12,15 +12,7 @@ impl Plugin for HtmlPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             PreStartup,
-            |document: Res<Document>, mut commands: Commands| {
-                let body = document.body().expect("document body should be available");
-
-                commands.spawn((
-                    Body,
-                    HtmlElement(SendWrapper::new(body.clone())),
-                    Node(SendWrapper::new(body.dyn_into().unwrap())),
-                ));
-            },
+            initialize_window.in_set(DomStartupSystems::Window),
         )
         .add_systems(
             PostUpdate,
@@ -31,25 +23,77 @@ impl Plugin for HtmlPlugin {
     }
 }
 
-#[derive(Debug, Component)]
-pub struct HtmlElement(SendWrapper<web_sys::HtmlElement>);
+macro_rules! web_wrapper {
+    ($ty:ident) => {
+        #[derive(Debug, Component)]
+        pub struct $ty(SendWrapper<web_sys::$ty>);
 
-impl core::ops::Deref for HtmlElement {
-    type Target = web_sys::HtmlElement;
+        impl core::ops::Deref for $ty {
+            type Target = web_sys::$ty;
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl AsRef<web_sys::$ty> for $ty {
+            fn as_ref(&self) -> &web_sys::$ty {
+                &self.0
+            }
+        }
+    };
 }
 
+web_wrapper!(Window);
+web_wrapper!(Document);
+
+fn initialize_window(mut commands: Commands) -> Result {
+    let window = web_sys::window().ok_or("browser window should be available")?;
+    let window_target: &web_sys::EventTarget = &window;
+
+    commands.spawn((
+        EventTarget(SendWrapper::new(window_target.clone())),
+        Window(SendWrapper::new(window.clone())),
+    ));
+
+    let document = window
+        .document()
+        .ok_or("browser document should be available")?;
+    let document_node: &web_sys::Node = &document;
+
+    commands.spawn((
+        Node(SendWrapper::new(document_node.clone())),
+        Document(SendWrapper::new(document.clone())),
+    ));
+
+    let body = document.body().ok_or("document body should be available")?;
+
+    commands.spawn((
+        Body,
+        HtmlElement(SendWrapper::new(body.clone())),
+        Node(SendWrapper::new(body.dyn_into().unwrap())),
+    ));
+
+    Ok(())
+}
+
+web_wrapper!(HtmlElement);
+web_wrapper!(EventTarget);
+
 #[derive(Debug, Component)]
-#[component(on_replace = Self::on_remove_hook)]
+#[component(on_replace = Self::on_remove_hook, on_insert = Self::on_insert_hook)]
 pub struct Node(SendWrapper<web_sys::Node>);
 
 impl core::ops::Deref for Node {
     type Target = web_sys::Node;
 
     fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<web_sys::Node> for Node {
+    fn as_ref(&self) -> &web_sys::Node {
         &self.0
     }
 }
@@ -61,6 +105,17 @@ impl Node {
             element.remove();
         }
     }
+
+    fn on_insert_hook(mut world: DeferredWorld, context: HookContext) {
+        let element = world.get::<Node>(context.entity).unwrap();
+        let event_target: &web_sys::EventTarget = element.0.as_ref();
+        let event_target = event_target.clone();
+
+        world
+            .commands()
+            .entity(context.entity)
+            .insert(EventTarget(SendWrapper::new(event_target)));
+    }
 }
 
 /// An HTML element inserter.
@@ -69,7 +124,7 @@ pub struct Element(pub &'static str);
 
 fn inject_element(
     elements: Query<(Entity, &Element), Without<Node>>,
-    document: Res<Document>,
+    document: Single<&Document>,
     mut commands: Commands,
 ) -> Result {
     for (entity, element) in &elements {
@@ -139,7 +194,7 @@ impl Text {
 
 fn inject_text(
     texts: Query<(Entity, &Text), Without<Node>>,
-    document: Res<Document>,
+    document: Single<&Document>,
     mut commands: Commands,
 ) -> Result {
     for (entity, text) in &texts {

@@ -11,7 +11,7 @@ impl<T> JsErr<T> for core::result::Result<T, JsValue> {
         match self {
             Ok(value) => Ok(value),
             Err(e) => {
-                let error = format!("{:?}", e);
+                let error = format!("{e:?}");
                 Err(error.into())
             }
         }

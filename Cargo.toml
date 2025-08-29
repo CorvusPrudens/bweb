@@ -3,6 +3,10 @@ name = "bweb"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["router"]
+router = ["web-sys/Url", "web-sys/History"]
+
 [dependencies]
 bevy_app = { version = "0.16.1", default-features = false, features = [
   "std",
@@ -27,4 +31,7 @@ features = [
   "Text",
   "Event",
   "DomTokenList",
+  "PointerEvent",
+  "Location",
+  "PopStateEvent",
 ]

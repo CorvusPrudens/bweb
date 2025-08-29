@@ -1,7 +1,6 @@
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
-use send_wrapper::SendWrapper;
 
 pub mod attributes;
 pub mod class;
@@ -12,55 +11,44 @@ pub struct DomPlugin;
 
 impl Plugin for DomPlugin {
     fn build(&self, app: &mut App) {
-        let window = web_sys::window().expect("browser window should be available");
-        let document = window
-            .document()
-            .expect("browser document should be available");
-
-        app.insert_resource(Window(SendWrapper::new(window)))
-            .insert_resource(Document(SendWrapper::new(document)))
-            .add_plugins((
-                events::EventsPlugin,
-                class::ClassPlugin,
-                html::HtmlPlugin,
-                attributes::AttributePlugin,
-            ))
-            .configure_sets(
-                PostUpdate,
-                (
-                    DomSystems::Insert,
-                    DomSystems::Reparent.after(DomSystems::Insert),
-                    DomSystems::Attach.after(DomSystems::Reparent),
-                ),
-            )
-            .add_systems(PostUpdate, (reparent.chain().in_set(DomSystems::Reparent),));
-    }
-}
-
-#[derive(Resource)]
-pub struct Window(SendWrapper<web_sys::Window>);
-
-impl core::ops::Deref for Window {
-    type Target = web_sys::Window;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[derive(Resource)]
-pub struct Document(SendWrapper<web_sys::Document>);
-
-impl core::ops::Deref for Document {
-    type Target = web_sys::Document;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        app.add_plugins((
+            events::EventsPlugin,
+            class::ClassPlugin,
+            html::HtmlPlugin,
+            attributes::AttributePlugin,
+        ))
+        .configure_sets(
+            PreStartup,
+            (
+                DomStartupSystems::Window,
+                DomStartupSystems::Pathname.after(DomStartupSystems::Window),
+            ),
+        )
+        .configure_sets(
+            PostUpdate,
+            (
+                DomSystems::ResolveRoutes,
+                DomSystems::Insert.after(DomSystems::ResolveRoutes),
+                DomSystems::Reparent.after(DomSystems::Insert),
+                DomSystems::Attach.after(DomSystems::Reparent),
+            ),
+        )
+        .add_systems(PostUpdate, (reparent.chain().in_set(DomSystems::Reparent),));
     }
 }
 
 #[derive(SystemSet, Clone, PartialEq, Eq, Debug, Hash)]
+pub enum DomStartupSystems {
+    /// Set up the window and any default HTML elements.
+    Window,
+    /// Fetch the pathname.
+    Pathname,
+}
+
+#[derive(SystemSet, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum DomSystems {
+    /// Resolve routes following pathname changes.
+    ResolveRoutes,
     /// Insert nodes into the document.
     Insert,
     /// Re-parent newly spawned or modified hierarchies.
@@ -79,17 +67,42 @@ fn reparent(
     ) -> Result {
         let (node, children) = nodes.get(parent_entity)?;
 
-        for child_entity in children.iter().flat_map(|c| c.iter()) {
+        let mut child_iter = children.iter().flat_map(|c| c.iter()).peekable();
+
+        while let Some(child_entity) = child_iter.next() {
             let Ok((child_node, _)) = nodes.get(child_entity) else {
                 continue;
             };
 
-            if node.is_changed() || child_node.is_changed() {
+            if node.is_changed() {
                 node.append_child(&child_node).js_err()?;
+            } else if child_node.is_changed() {
+                match child_iter.peek().and_then(|c| nodes.get(*c).ok()) {
+                    Some((next, _)) => {
+                        node.insert_before(&child_node, Some(&next)).js_err()?;
+                    }
+                    None => {
+                        node.append_child(&child_node).js_err()?;
+                    }
+                }
             }
 
             handle_children(nodes, child_entity)?;
         }
+
+        // for child_entity in children.iter().flat_map(|c| c.iter()) {
+        //     let Ok((child_node, _)) = nodes.get(child_entity) else {
+        //         continue;
+        //     };
+        //
+        //     if node.is_changed() {
+        //         node.append_child(&child_node).js_err()?;
+        //     } else if child_node.is_changed() {
+        //         node.append_child(&child_node).js_err()?;
+        //     }
+        //
+        //     handle_children(nodes, child_entity)?;
+        // }
 
         Ok(())
     }
@@ -104,5 +117,5 @@ pub mod prelude {
     pub use super::attributes::*;
     pub use super::events::*;
     pub use super::html::*;
-    pub use crate::class;
+    pub use crate::{class, events};
 }
