@@ -6,20 +6,23 @@ use send_wrapper::SendWrapper;
 use std::borrow::Cow;
 use wasm_bindgen::JsCast;
 
+pub mod svg;
+
 pub(super) struct HtmlPlugin;
 
 impl Plugin for HtmlPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            PreStartup,
-            initialize_window.in_set(DomStartupSystems::Window),
-        )
-        .add_systems(
-            PostUpdate,
-            ((update_text, (inject_element, inject_text))
-                .chain()
-                .in_set(DomSystems::Insert),),
-        );
+        app.add_plugins(svg::SvgPlugin)
+            .add_systems(
+                PreStartup,
+                initialize_window.in_set(DomStartupSystems::Window),
+            )
+            .add_systems(
+                PostUpdate,
+                ((update_text, (inject_element, inject_text))
+                    .chain()
+                    .in_set(DomSystems::Insert),),
+            );
     }
 }
 
@@ -78,7 +81,9 @@ fn initialize_window(mut commands: Commands) -> Result {
 }
 
 web_wrapper!(HtmlElement);
+web_wrapper!(Element);
 web_wrapper!(EventTarget);
+web_wrapper!(SvgElement);
 
 #[derive(Debug, Component)]
 #[component(on_replace = Self::on_remove_hook, on_insert = Self::on_insert_hook)]
@@ -120,10 +125,10 @@ impl Node {
 
 /// An HTML element inserter.
 #[derive(Debug, Component)]
-pub struct Element(pub &'static str);
+pub struct HtmlElementName(pub &'static str);
 
 fn inject_element(
-    elements: Query<(Entity, &Element), Without<Node>>,
+    elements: Query<(Entity, &HtmlElementName), Without<Node>>,
     document: Single<&Document>,
     mut commands: Commands,
 ) -> Result {
@@ -136,6 +141,7 @@ fn inject_element(
 
         commands.entity(entity).insert((
             HtmlElement(SendWrapper::new(element.clone())),
+            Element(SendWrapper::new(element.clone().dyn_into().unwrap())),
             Node(SendWrapper::new(element.dyn_into().unwrap())),
         ));
     }
@@ -143,52 +149,48 @@ fn inject_element(
     Ok(())
 }
 
-#[derive(Debug, Component)]
-#[require(Element("a"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("a"))]
 pub struct A;
 
-#[derive(Debug, Component)]
-#[require(Element("video"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("video"))]
 pub struct Video;
 
-#[derive(Debug, Component)]
-#[require(Element("body"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("body"))]
 pub struct Body;
 
-#[derive(Debug, Component)]
-#[require(Element("div"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("div"))]
 pub struct Div;
 
-#[derive(Debug, Component)]
-#[require(Element("nav"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("nav"))]
 pub struct Nav;
 
-#[derive(Debug, Component)]
-#[require(Element("header"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("header"))]
 pub struct Header;
 
-#[derive(Debug, Component)]
-#[require(Element("footer"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("footer"))]
 pub struct Footer;
 
-#[derive(Debug, Component)]
-#[require(Element("main"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("main"))]
 pub struct Main;
 
-#[derive(Debug, Component)]
-#[require(Element("button"))]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("button"))]
 pub struct Button;
 
-#[derive(Debug, Component)]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
 pub struct Text(Cow<'static, str>);
 
 impl Text {
-    pub fn new(text: &'static str) -> Self {
-        Self(Cow::Borrowed(text))
-    }
-
-    pub fn dynamic(text: String) -> Self {
-        Self(Cow::Owned(text))
+    pub fn new(text: impl Into<Cow<'static, str>>) -> Self {
+        Self(text.into())
     }
 }
 

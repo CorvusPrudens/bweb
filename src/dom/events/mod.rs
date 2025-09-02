@@ -1,17 +1,28 @@
-use std::{any::TypeId, collections::HashSet};
-
 use super::{DomSystems, html::EventTarget};
 use crate::{js_err::JsErr, web_runner::ScheduleTrigger};
 use bevy_app::prelude::*;
 use bevy_ecs::{component::HookContext, prelude::*, system::SystemId, world::DeferredWorld};
 use send_wrapper::SendWrapper;
+use std::{any::TypeId, collections::HashSet};
 use wasm_bindgen::{JsCast, convert::FromWasmAbi, prelude::Closure};
+
+mod handler;
+
+pub use handler::*;
 
 pub(super) struct EventsPlugin;
 
 impl Plugin for EventsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((OnClick::plugin, OnPopState::plugin));
+        app.add_plugins((
+            OnClick::plugin,
+            OnPopState::plugin,
+            OnSelectStart::plugin,
+            OnPointerDown::plugin,
+            OnPointerMove::plugin,
+            OnPointerUp::plugin,
+            OnKeyDown::plugin,
+        ));
     }
 }
 
@@ -36,11 +47,20 @@ macro_rules! events {
 pub type Ev<E> = In<Event<E>>;
 
 #[derive(Clone)]
-pub struct Event<E>(SendWrapper<E>);
+pub struct Event<E> {
+    entity: Entity,
+    event: SendWrapper<E>,
+}
+
+impl<E> Event<E> {
+    pub fn target(&self) -> Entity {
+        self.entity
+    }
+}
 
 impl<E> AsRef<E> for Event<E> {
     fn as_ref(&self) -> &E {
-        &self.0
+        &self.event
     }
 }
 
@@ -55,30 +75,45 @@ impl<E> core::ops::Deref for Event<E> {
 #[derive(Resource, Default)]
 struct RegisteredEvents(HashSet<TypeId>);
 
-type Handler<E> = SystemId<In<Event<E>>>;
+type Handler<E> = SystemId<In<Event<E>>, Result>;
 
 macro_rules! handler {
     ($ty:ident, $name:literal, $ev:path) => {
         #[derive(Component)]
-        pub struct $ty(Box<dyn FnOnce(&mut World) -> Handler<$ev> + Send + Sync>);
+        pub struct $ty(Option<Box<dyn FnOnce(&mut World) -> Handler<$ev> + Send + Sync>>);
 
         impl $ty {
             pub fn new<S, M>(system: S) -> Self
             where
-                S: IntoSystem<In<Event<$ev>>, (), M> + Send + Sync + 'static,
+                S: IntoHandlerSystem<$ev, M> + Send + Sync + 'static,
             {
-                Self(Box::new(move |world: &mut World| {
-                    world.register_system(system)
-                }))
+                Self(Some(Box::new(move |world: &mut World| {
+                    world.register_system(system.into_handler())
+                })))
+            }
+
+            pub fn stop_propagation() -> Self {
+                Self::new(|e: Ev<$ev>| e.stop_propagation())
+            }
+
+            pub fn prevent_default() -> Self {
+                Self::new(|e: Ev<$ev>| e.prevent_default())
             }
 
             fn transform(world: &mut World) {
-                let mut clicks = world.query_filtered::<Entity, With<$ty>>();
+                let mut clicks =
+                    world.query_filtered::<Entity, (With<$ty>, Without<EventHandler<$ev>>)>();
                 let clicks: Vec<_> = clicks.iter(world).collect();
 
                 for click in clicks {
-                    let handler = world.entity_mut(click).take::<$ty>().unwrap();
-                    let id = (handler.0)(world);
+                    let handler = world
+                        .entity_mut(click)
+                        .get_mut::<$ty>()
+                        .unwrap()
+                        .0
+                        .take()
+                        .unwrap();
+                    let id = handler(world);
                     world.entity_mut(click).insert(EventHandler {
                         handler: id,
                         event: $name,
@@ -104,7 +139,12 @@ macro_rules! handler {
 }
 
 handler! { OnClick, "click", web_sys::PointerEvent }
+handler! { OnPointerDown, "pointerdown", web_sys::PointerEvent }
+handler! { OnPointerMove, "pointermove", web_sys::PointerEvent }
+handler! { OnPointerUp, "pointerup", web_sys::PointerEvent }
 handler! { OnPopState, "popstate", web_sys::PopStateEvent }
+handler! { OnSelectStart, "selectstart", web_sys::Event }
+handler! { OnKeyDown, "keydown", web_sys::KeyboardEvent }
 
 #[derive(Debug, Component)]
 #[component(on_replace = Self::on_replace_hook)]
@@ -144,19 +184,25 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
 }
 
 fn manage_handlers<E>(
-    mut handlers: Query<(&mut EventHandler<E>, &EventOf), Changed<EventHandler<E>>>,
+    mut handlers: Query<(Entity, &mut EventHandler<E>, &EventOf), Changed<EventHandler<E>>>,
     nodes: Query<&EventTarget>,
 ) -> Result
 where
     E: FromWasmAbi + 'static,
 {
-    for (mut handler, node) in &mut handlers {
+    for (entity, mut handler, node) in &mut handlers {
         let node = nodes.get(node.0)?;
         let id = handler.handler;
         let function = Closure::new(move |ev: E| {
             let result = crate::web_runner::app_scope(|app| -> Result {
                 let world = app.world_mut();
-                world.run_system_with(id, Event(SendWrapper::new(ev)))?;
+                world.run_system_with(
+                    id,
+                    Event {
+                        entity,
+                        event: SendWrapper::new(ev),
+                    },
+                )??;
                 world.resource::<ScheduleTrigger>().trigger();
                 Ok(())
             });

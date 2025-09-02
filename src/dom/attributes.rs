@@ -1,4 +1,4 @@
-use super::{DomSystems, html::HtmlElement};
+use super::{DomSystems, html::Element};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
@@ -17,6 +17,8 @@ impl Plugin for AttributePlugin {
             Src::plugin,
             Target::plugin,
             Tabindex::plugin,
+            Draggable::plugin,
+            D::plugin,
             Muted::plugin,
             Autoplay::plugin,
             Loop::plugin,
@@ -28,7 +30,7 @@ impl Plugin for AttributePlugin {
 
 macro_rules! attribute {
     ($ty:ident, $attr:literal) => {
-        #[derive(Debug, Component)]
+        #[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $ty(Cow<'static, str>);
 
         impl core::ops::Deref for $ty {
@@ -46,12 +48,12 @@ macro_rules! attribute {
         }
 
         impl $ty {
-            pub fn new(attribute: &'static str) -> Self {
-                Self(Cow::Borrowed(attribute))
+            pub fn new(attribute: impl Into<Cow<'static, str>>) -> Self {
+                Self(attribute.into())
             }
 
             // TODO: these should really be trait-like
-            fn attach(attrs: Query<(&Self, Option<&HtmlElement>), Changed<Self>>) -> Result {
+            fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
                 for (href, element) in &attrs {
                     let Some(element) = element else {
                         return Err(
@@ -65,10 +67,7 @@ macro_rules! attribute {
                 Ok(())
             }
 
-            fn observe_replace(
-                trigger: Trigger<OnReplace, Self>,
-                attr: Query<&HtmlElement>,
-            ) -> Result {
+            fn observe_replace(trigger: Trigger<OnReplace, Self>, attr: Query<&Element>) -> Result {
                 let Ok(element) = attr.get(trigger.target()) else {
                     return Ok(());
                 };
@@ -92,15 +91,17 @@ attribute! {Height, "height"}
 attribute! {Src, "src"}
 attribute! {Target, "target"}
 attribute! {Tabindex, "tabindex"}
+attribute! {Draggable, "draggable"}
+attribute! {D, "d"}
 
 macro_rules! boolean_attribute {
     ($ty:ident, $attr:literal) => {
-        #[derive(Debug, Component)]
+        #[derive(Debug, Component, Clone, PartialEq, Eq)]
         pub struct $ty;
 
         impl $ty {
             // TODO: these should really be trait-like
-            fn attach(attrs: Query<Option<&HtmlElement>, (Changed<Self>, With<Self>)>) -> Result {
+            fn attach(attrs: Query<Option<&Element>, (Changed<Self>, With<Self>)>) -> Result {
                 for element in &attrs {
                     let Some(element) = element else {
                         return Err(
@@ -114,10 +115,7 @@ macro_rules! boolean_attribute {
                 Ok(())
             }
 
-            fn observe_replace(
-                trigger: Trigger<OnReplace, Self>,
-                attr: Query<&HtmlElement>,
-            ) -> Result {
+            fn observe_replace(trigger: Trigger<OnReplace, Self>, attr: Query<&Element>) -> Result {
                 let Ok(element) = attr.get(trigger.target()) else {
                     return Ok(());
                 };

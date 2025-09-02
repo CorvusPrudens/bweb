@@ -34,4 +34,6 @@ features = [
   "PointerEvent",
   "Location",
   "PopStateEvent",
+  "KeyboardEvent",
+  "SvgElement",
 ]

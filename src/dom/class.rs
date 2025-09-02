@@ -35,7 +35,18 @@ macro_rules! class {
     };
 }
 
-#[derive(Debug, Component)]
+#[macro_export]
+macro_rules! classes {
+    [$($class:expr),*$(,)?] => {
+        <$crate::dom::class::Classes>::spawn((
+            $($crate::dom::class::Spawn(
+                $class
+            )),*
+        ))
+    };
+}
+
+#[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Class(Cow<'static, str>);
 
 impl Class {
