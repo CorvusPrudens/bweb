@@ -41,6 +41,14 @@ macro_rules! attribute {
             }
         }
 
+        impl core::fmt::Write for $ty {
+            fn write_str(&mut self, input: &str) -> core::fmt::Result {
+                self.to_mut().push_str(input);
+
+                Ok(())
+            }
+        }
+
         impl AsRef<str> for $ty {
             fn as_ref(&self) -> &str {
                 &self.0
@@ -50,6 +58,21 @@ macro_rules! attribute {
         impl $ty {
             pub fn new(attribute: impl Into<Cow<'static, str>>) -> Self {
                 Self(attribute.into())
+            }
+
+            pub fn clear(&mut self) {
+                match &mut self.0 {
+                    Cow::Borrowed(_) => {
+                        self.0 = Cow::Owned(String::new());
+                    }
+                    Cow::Owned(o) => {
+                        o.clear();
+                    }
+                }
+            }
+
+            pub fn to_mut(&mut self) -> &mut String {
+                self.0.to_mut()
             }
 
             // TODO: these should really be trait-like
