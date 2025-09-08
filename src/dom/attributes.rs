@@ -9,21 +9,26 @@ pub(super) struct AttributePlugin;
 impl Plugin for AttributePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
-            Href::plugin,
-            Title::plugin,
-            Style::plugin,
-            Width::plugin,
-            Height::plugin,
-            Src::plugin,
-            Target::plugin,
-            Tabindex::plugin,
-            Draggable::plugin,
-            D::plugin,
-            Muted::plugin,
-            Autoplay::plugin,
-            Loop::plugin,
-            Disabled::plugin,
-            Download::plugin,
+            (
+                Href::plugin,
+                Title::plugin,
+                Style::plugin,
+                Width::plugin,
+                Height::plugin,
+                Src::plugin,
+                Target::plugin,
+                Tabindex::plugin,
+                Draggable::plugin,
+            ),
+            (
+                D::plugin,
+                Lang::plugin,
+                Muted::plugin,
+                Autoplay::plugin,
+                Loop::plugin,
+                Disabled::plugin,
+                Download::plugin,
+            ),
         ));
     }
 }
@@ -116,6 +121,7 @@ attribute! {Target, "target"}
 attribute! {Tabindex, "tabindex"}
 attribute! {Draggable, "draggable"}
 attribute! {D, "d"}
+attribute! {Lang, "lang"}
 
 macro_rules! boolean_attribute {
     ($ty:ident, $attr:literal) => {

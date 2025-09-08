@@ -33,7 +33,7 @@ impl Plugin for DomPlugin {
                 DomSystems::Attach.after(DomSystems::Reparent),
             ),
         )
-        .add_systems(PostUpdate, (reparent.chain().in_set(DomSystems::Reparent),));
+        .add_systems(PostUpdate, (reparent.in_set(DomSystems::Reparent),));
     }
 }
 
@@ -58,7 +58,7 @@ pub enum DomSystems {
 }
 
 fn reparent(
-    body: Query<Entity, With<html::Body>>,
+    html: Query<Entity, With<html::elements::Html>>,
     nodes: Query<(Ref<html::Node>, Option<&Children>)>,
 ) -> Result {
     fn handle_children(
@@ -67,18 +67,31 @@ fn reparent(
     ) -> Result {
         let (node, children) = nodes.get(parent_entity)?;
 
-        let mut child_iter = children.iter().flat_map(|c| c.iter()).peekable();
+        // let mut child_iter = children.iter().flat_map(|c| c.iter()).peekable();
 
-        while let Some(child_entity) = child_iter.next() {
-            let Ok((child_node, _)) = nodes.get(child_entity) else {
+        let Some(children) = children else {
+            return Ok(());
+        };
+
+        let children = children.as_ref();
+        for (i, child_entity) in children.iter().enumerate() {
+            let Ok((child_node, _)) = nodes.get(*child_entity) else {
                 continue;
             };
 
             if node.is_changed() {
                 node.append_child(&child_node).js_err()?;
             } else if child_node.is_changed() {
-                match child_iter.peek().and_then(|c| nodes.get(*c).ok()) {
-                    Some((next, _)) => {
+                // look for the next child (that we're aware of)
+                // that's a child of the parent node
+                let next = children[i + 1..].iter().find_map(|c| {
+                    let (child_node, ..) = nodes.get(*c).ok()?;
+
+                    node.contains(Some(&child_node)).then_some(child_node)
+                });
+
+                match next {
+                    Some(next) => {
                         node.insert_before(&child_node, Some(&next)).js_err()?;
                     }
                     None => {
@@ -87,8 +100,30 @@ fn reparent(
                 }
             }
 
-            handle_children(nodes, child_entity)?;
+            handle_children(nodes, *child_entity)?;
         }
+
+        // while let Some(child_entity) = child_iter.next() {
+        //     let Ok((child_node, _)) = nodes.get(child_entity) else {
+        //         continue;
+        //     };
+        //
+        //     if node.is_changed() {
+        //         node.append_child(&child_node).js_err()?;
+        //     } else if child_node.is_changed() {
+        //         match child_iter.peek().and_then(|c| nodes.get(*c).ok()) {
+        //             Some((next, _)) => {
+        //                 // if it fails,
+        //                 node.insert_before(&child_node, Some(&next)).js_err()?;
+        //             }
+        //             None => {
+        //                 node.append_child(&child_node).js_err()?;
+        //             }
+        //         }
+        //     }
+        //
+        //     handle_children(nodes, child_entity)?;
+        // }
 
         // for child_entity in children.iter().flat_map(|c| c.iter()) {
         //     let Ok((child_node, _)) = nodes.get(child_entity) else {
@@ -107,8 +142,8 @@ fn reparent(
         Ok(())
     }
 
-    let body = body.single()?;
-    handle_children(&nodes, body)?;
+    let html = html.single()?;
+    handle_children(&nodes, html)?;
 
     Ok(())
 }
@@ -116,6 +151,6 @@ fn reparent(
 pub mod prelude {
     pub use super::attributes::*;
     pub use super::events::*;
-    pub use super::html::{svg::*, *};
+    pub use super::html::{elements::*, svg::*, *};
     pub use crate::{class, events};
 }

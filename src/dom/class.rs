@@ -1,4 +1,4 @@
-use super::{DomSystems, html::HtmlElement};
+use super::{DomSystems, html::Element};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
@@ -56,7 +56,7 @@ impl Class {
 
     fn attach_class(
         texts: Query<(&Self, &ClassOf), Changed<Self>>,
-        element: Query<&HtmlElement>,
+        element: Query<&Element>,
     ) -> Result {
         for (class, parent) in &texts {
             element
@@ -72,7 +72,7 @@ impl Class {
     fn observe_replace(
         trigger: Trigger<OnReplace, Self>,
         class: Query<(&Self, &ClassOf)>,
-        element: Query<&HtmlElement>,
+        element: Query<&Element>,
     ) -> Result {
         let Ok((class, parent)) = class.get(trigger.target()) else {
             return Ok(());

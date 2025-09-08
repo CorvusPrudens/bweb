@@ -6,6 +6,7 @@ use send_wrapper::SendWrapper;
 use std::borrow::Cow;
 use wasm_bindgen::JsCast;
 
+pub mod elements;
 pub mod svg;
 
 pub(super) struct HtmlPlugin;
@@ -69,11 +70,34 @@ fn initialize_window(mut commands: Commands) -> Result {
         Document(SendWrapper::new(document.clone())),
     ));
 
+    let html = document
+        .document_element()
+        .ok_or("document HTML should be available")?;
+    let html = commands
+        .spawn((
+            elements::Html,
+            HtmlElement(SendWrapper::new(html.clone().dyn_into().unwrap())),
+            Element(SendWrapper::new(html.clone().dyn_into().unwrap())),
+            Node(SendWrapper::new(html.dyn_into().unwrap())),
+        ))
+        .id();
+
+    let head = document.head().ok_or("document head should be available")?;
+    commands.spawn((
+        ChildOf(html),
+        elements::Head,
+        HtmlElement(SendWrapper::new(head.clone().dyn_into().unwrap())),
+        Element(SendWrapper::new(head.clone().dyn_into().unwrap())),
+        Node(SendWrapper::new(head.dyn_into().unwrap())),
+    ));
+
     let body = document.body().ok_or("document body should be available")?;
 
     commands.spawn((
-        Body,
+        ChildOf(html),
+        elements::Body,
         HtmlElement(SendWrapper::new(body.clone())),
+        Element(SendWrapper::new(body.clone().dyn_into().unwrap())),
         Node(SendWrapper::new(body.dyn_into().unwrap())),
     ));
 
@@ -148,42 +172,6 @@ fn inject_element(
 
     Ok(())
 }
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("a"))]
-pub struct A;
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("video"))]
-pub struct Video;
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("body"))]
-pub struct Body;
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("div"))]
-pub struct Div;
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("nav"))]
-pub struct Nav;
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("header"))]
-pub struct Header;
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("footer"))]
-pub struct Footer;
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("main"))]
-pub struct Main;
-
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
-#[require(HtmlElementName("button"))]
-pub struct Button;
 
 #[derive(Debug, Component, Clone, PartialEq, Eq)]
 pub struct Text(Cow<'static, str>);

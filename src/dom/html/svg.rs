@@ -40,10 +40,11 @@ fn inject_svg_element(
     Ok(())
 }
 
-#[derive(Debug, Component)]
+#[derive(Debug, Component, PartialEq, Eq, Clone)]
 #[require(SvgElementName("svg"))]
 pub struct Svg;
 
-#[derive(Debug, Component)]
+#[derive(Debug, Component, PartialEq, Eq, Clone)]
 #[require(SvgElementName("path"))]
 pub struct Path;
+

@@ -4,9 +4,7 @@ use crate::dom::{DomStartupSystems, prelude::*};
 use crate::dom::{DomSystems, events::Events};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
-use bevy_ecs::component::HookContext;
 use bevy_ecs::prelude::*;
-use bevy_ecs::world::DeferredWorld;
 use bevy_log::info;
 use wasm_bindgen::JsValue;
 

@@ -27,6 +27,8 @@ version = "0.3.77"
 features = [
   "Window",
   "HtmlElement",
+  "HtmlHeadElement",
+  "CssStyleDeclaration",
   "Document",
   "Text",
   "Event",

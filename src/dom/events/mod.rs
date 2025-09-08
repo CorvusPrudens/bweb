@@ -21,6 +21,7 @@ impl Plugin for EventsPlugin {
             OnPointerDown::plugin,
             OnPointerMove::plugin,
             OnPointerUp::plugin,
+            OnContextMenu::plugin,
             OnKeyDown::plugin,
         ));
     }
@@ -142,6 +143,7 @@ handler! { OnClick, "click", web_sys::PointerEvent }
 handler! { OnPointerDown, "pointerdown", web_sys::PointerEvent }
 handler! { OnPointerMove, "pointermove", web_sys::PointerEvent }
 handler! { OnPointerUp, "pointerup", web_sys::PointerEvent }
+handler! { OnContextMenu, "contextmenu", web_sys::PointerEvent }
 handler! { OnPopState, "popstate", web_sys::PopStateEvent }
 handler! { OnSelectStart, "selectstart", web_sys::Event }
 handler! { OnKeyDown, "keydown", web_sys::KeyboardEvent }
@@ -177,9 +179,7 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
         }
 
         let handler = handler.handler;
-        world
-            .commands()
-            .queue(move |world: &mut World| world.unregister_system(handler));
+        world.commands().unregister_system(handler);
     }
 }
 
