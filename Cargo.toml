@@ -8,12 +8,14 @@ default = ["router"]
 router = ["web-sys/Url", "web-sys/History"]
 
 [dependencies]
-bevy_app = { version = "0.16.1", default-features = false, features = [
+bevy_app = { git = "https://github.com/cart/bevy", branch = "next-gen-scenes", default-features = false, features = [
   "std",
   "web",
 ] }
-bevy_ecs = { version = "0.16.1", default-features = false, features = ["std"] }
-bevy_log = "0.16.1"
+bevy_ecs = { git = "https://github.com/cart/bevy", branch = "next-gen-scenes", default-features = false, features = [
+  "std",
+] }
+log = { version = "0.4", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = [
   "alloc",
   "std",

@@ -9,7 +9,7 @@ pub(super) struct ClassPlugin;
 impl Plugin for ClassPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PostUpdate, Class::attach_class.in_set(DomSystems::Attach))
-            .add_observer(Class::observe_replace);
+            .add_observer(Class::observe_remove);
     }
 }
 
@@ -69,8 +69,8 @@ impl Class {
         Ok(())
     }
 
-    fn observe_replace(
-        trigger: Trigger<OnReplace, Self>,
+    fn observe_remove(
+        trigger: On<Remove, Self>,
         class: Query<(&Self, &ClassOf)>,
         element: Query<&Element>,
     ) -> Result {
@@ -84,5 +84,19 @@ impl Class {
         element.class_list().remove_1(&class.0).js_err()?;
 
         Ok(())
+    }
+}
+
+impl core::ops::Deref for Class {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for Class {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
 }

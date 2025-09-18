@@ -1,4 +1,7 @@
-use crate::{dom::DomSystems, js_err::JsErr};
+use crate::{
+    dom::{DomSystems, prelude::Xmlns},
+    js_err::JsErr,
+};
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use send_wrapper::SendWrapper;
@@ -40,11 +43,10 @@ fn inject_svg_element(
     Ok(())
 }
 
-#[derive(Debug, Component, PartialEq, Eq, Clone)]
-#[require(SvgElementName("svg"))]
+#[derive(Debug, Default, Component, PartialEq, Eq, Clone)]
+#[require(SvgElementName("svg"), Xmlns::new("http://www.w3.org/2000/svg"))]
 pub struct Svg;
 
-#[derive(Debug, Component, PartialEq, Eq, Clone)]
+#[derive(Debug, Default, Component, PartialEq, Eq, Clone)]
 #[require(SvgElementName("path"))]
 pub struct Path;
-

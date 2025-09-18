@@ -1,7 +1,7 @@
 use super::{DomSystems, html::EventTarget};
 use crate::{js_err::JsErr, web_runner::ScheduleTrigger};
 use bevy_app::prelude::*;
-use bevy_ecs::{component::HookContext, prelude::*, system::SystemId, world::DeferredWorld};
+use bevy_ecs::{lifecycle::HookContext, prelude::*, system::SystemId, world::DeferredWorld};
 use send_wrapper::SendWrapper;
 use std::{any::TypeId, collections::HashSet};
 use wasm_bindgen::{JsCast, convert::FromWasmAbi, prelude::Closure};
@@ -81,24 +81,50 @@ type Handler<E> = SystemId<In<Event<E>>, Result>;
 macro_rules! handler {
     ($ty:ident, $name:literal, $ev:path) => {
         #[derive(Component)]
-        pub struct $ty(Option<Box<dyn FnOnce(&mut World) -> Handler<$ev> + Send + Sync>>);
+        pub struct $ty {
+            handler: Option<Box<dyn FnOnce(&mut World) -> Handler<$ev> + Send + Sync>>,
+            trigger: bool,
+            capturing: bool,
+        }
 
         impl $ty {
             pub fn new<S, M>(system: S) -> Self
             where
                 S: IntoHandlerSystem<$ev, M> + Send + Sync + 'static,
             {
-                Self(Some(Box::new(move |world: &mut World| {
-                    world.register_system(system.into_handler())
-                })))
+                Self {
+                    handler: Some(Box::new(move |world: &mut World| {
+                        world.register_system(system.into_handler())
+                    })),
+                    trigger: true,
+                    capturing: false,
+                }
+            }
+
+            /// Prevent this callback from triggering an ECS update.
+            #[inline(always)]
+            pub fn suppress(self) -> Self {
+                Self {
+                    trigger: false,
+                    ..self
+                }
+            }
+
+            /// Handle this event in the capturing phase.
+            #[inline(always)]
+            pub fn capturing(self) -> Self {
+                Self {
+                    capturing: true,
+                    ..self
+                }
             }
 
             pub fn stop_propagation() -> Self {
-                Self::new(|e: Ev<$ev>| e.stop_propagation())
+                Self::new(|e: Ev<$ev>| e.stop_propagation()).suppress()
             }
 
             pub fn prevent_default() -> Self {
-                Self::new(|e: Ev<$ev>| e.prevent_default())
+                Self::new(|e: Ev<$ev>| e.prevent_default()).suppress()
             }
 
             fn transform(world: &mut World) {
@@ -107,18 +133,20 @@ macro_rules! handler {
                 let clicks: Vec<_> = clicks.iter(world).collect();
 
                 for click in clicks {
-                    let handler = world
-                        .entity_mut(click)
-                        .get_mut::<$ty>()
-                        .unwrap()
-                        .0
-                        .take()
-                        .unwrap();
+                    let mut ev = world.entity_mut(click);
+                    let mut ev = ev.get_mut::<$ty>().unwrap();
+
+                    let handler = ev.handler.take().unwrap();
+                    let trigger = ev.trigger;
+                    let capturing = ev.capturing;
+
                     let id = handler(world);
                     world.entity_mut(click).insert(EventHandler {
                         handler: id,
                         event: $name,
                         closure: None,
+                        trigger,
+                        capturing,
                     });
                 }
             }
@@ -154,6 +182,9 @@ pub struct EventHandler<E: FromWasmAbi + 'static> {
     handler: Handler<E>,
     event: &'static str,
     closure: Option<SendWrapper<Closure<dyn FnMut(E)>>>,
+    /// Trigger an ECS update cycle.
+    trigger: bool,
+    capturing: bool,
 }
 
 impl<E: FromWasmAbi + 'static> EventHandler<E> {
@@ -171,9 +202,10 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
         };
 
         if let Some(closure) = handler.closure.as_ref() {
-            node.remove_event_listener_with_callback(
+            node.remove_event_listener_with_callback_and_bool(
                 handler.event,
                 closure.as_ref().unchecked_ref(),
+                handler.capturing,
             )
             .unwrap();
         }
@@ -193,6 +225,7 @@ where
     for (entity, mut handler, node) in &mut handlers {
         let node = nodes.get(node.0)?;
         let id = handler.handler;
+        let trigger = handler.trigger;
         let function = Closure::new(move |ev: E| {
             let result = crate::web_runner::app_scope(|app| -> Result {
                 let world = app.world_mut();
@@ -203,17 +236,25 @@ where
                         event: SendWrapper::new(ev),
                     },
                 )??;
-                world.resource::<ScheduleTrigger>().trigger();
+
+                if trigger {
+                    world.resource::<ScheduleTrigger>().trigger();
+                }
+
                 Ok(())
             });
 
             if let Err(e) = result {
-                bevy_log::error!("{e}");
+                log::error!("{e}");
             }
         });
 
-        node.add_event_listener_with_callback(handler.event, function.as_ref().unchecked_ref())
-            .js_err()?;
+        node.add_event_listener_with_callback_and_bool(
+            handler.event,
+            function.as_ref().unchecked_ref(),
+            handler.capturing,
+        )
+        .js_err()?;
 
         handler.closure = Some(SendWrapper::new(function));
     }

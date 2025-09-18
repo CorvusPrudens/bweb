@@ -74,7 +74,7 @@ fn web_runner(mut receiver: mpsc::UnboundedReceiver<()>) -> impl FnOnce(App) -> 
                     });
 
                     if let Some(exit) = exit {
-                        bevy_log::info!("App exiting: {exit:?}");
+                        log::info!("App exiting: {exit:?}");
                         break;
                     }
                 }

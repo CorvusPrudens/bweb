@@ -23,6 +23,9 @@ impl Plugin for AttributePlugin {
             (
                 D::plugin,
                 Lang::plugin,
+                ViewBox::plugin,
+                Xmlns::plugin,
+                Fill::plugin,
                 Muted::plugin,
                 Autoplay::plugin,
                 Loop::plugin,
@@ -95,7 +98,7 @@ macro_rules! attribute {
                 Ok(())
             }
 
-            fn observe_replace(trigger: Trigger<OnReplace, Self>, attr: Query<&Element>) -> Result {
+            fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
                 let Ok(element) = attr.get(trigger.target()) else {
                     return Ok(());
                 };
@@ -105,7 +108,7 @@ macro_rules! attribute {
 
             fn plugin(app: &mut App) {
                 app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
-                    .add_observer(Self::observe_replace);
+                    .add_observer(Self::observe_remove);
             }
         }
     };
@@ -122,6 +125,9 @@ attribute! {Tabindex, "tabindex"}
 attribute! {Draggable, "draggable"}
 attribute! {D, "d"}
 attribute! {Lang, "lang"}
+attribute! {ViewBox, "viewBox"}
+attribute! {Xmlns, "xmlns"}
+attribute! {Fill, "fill"}
 
 macro_rules! boolean_attribute {
     ($ty:ident, $attr:literal) => {
@@ -144,7 +150,7 @@ macro_rules! boolean_attribute {
                 Ok(())
             }
 
-            fn observe_replace(trigger: Trigger<OnReplace, Self>, attr: Query<&Element>) -> Result {
+            fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
                 let Ok(element) = attr.get(trigger.target()) else {
                     return Ok(());
                 };
@@ -154,7 +160,7 @@ macro_rules! boolean_attribute {
 
             fn plugin(app: &mut App) {
                 app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
-                    .add_observer(Self::observe_replace);
+                    .add_observer(Self::observe_remove);
             }
         }
     };

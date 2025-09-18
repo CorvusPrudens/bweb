@@ -1,19 +1,22 @@
 use super::{DomStartupSystems, DomSystems};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
-use bevy_ecs::{component::HookContext, prelude::*, world::DeferredWorld};
+use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
 use send_wrapper::SendWrapper;
 use std::borrow::Cow;
 use wasm_bindgen::JsCast;
 
 pub mod elements;
+mod inner_html;
 pub mod svg;
+
+pub use inner_html::InnerHtml;
 
 pub(super) struct HtmlPlugin;
 
 impl Plugin for HtmlPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(svg::SvgPlugin)
+        app.add_plugins((svg::SvgPlugin, InnerHtml::plugin))
             .add_systems(
                 PreStartup,
                 initialize_window.in_set(DomStartupSystems::Window),
@@ -29,7 +32,7 @@ impl Plugin for HtmlPlugin {
 
 macro_rules! web_wrapper {
     ($ty:ident) => {
-        #[derive(Debug, Component)]
+        #[derive(Debug, Component, Clone)]
         pub struct $ty(SendWrapper<web_sys::$ty>);
 
         impl core::ops::Deref for $ty {

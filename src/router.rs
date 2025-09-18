@@ -5,7 +5,7 @@ use crate::dom::{DomSystems, events::Events};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
-use bevy_log::info;
+use log::info;
 use wasm_bindgen::JsValue;
 
 // TODO: okay this should probably be a lil entity set guy
