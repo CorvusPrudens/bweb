@@ -1,7 +1,14 @@
 use super::{DomSystems, html::EventTarget};
 use crate::{js_err::JsErr, web_runner::ScheduleTrigger};
 use bevy_app::prelude::*;
-use bevy_ecs::{lifecycle::HookContext, prelude::*, system::SystemId, world::DeferredWorld};
+use bevy_ecs::{
+    error::ErrorContext,
+    lifecycle::HookContext,
+    prelude::*,
+    system::{RegisteredSystemError, SystemId},
+    world::DeferredWorld,
+};
+use bevy_utils::prelude::DebugName;
 use send_wrapper::SendWrapper;
 use std::{any::TypeId, collections::HashSet};
 use wasm_bindgen::{JsCast, convert::FromWasmAbi, prelude::Closure};
@@ -82,7 +89,7 @@ macro_rules! handler {
     ($ty:ident, $name:literal, $ev:path) => {
         #[derive(Component)]
         pub struct $ty {
-            handler: Option<Box<dyn FnOnce(&mut World) -> Handler<$ev> + Send + Sync>>,
+            handler: Option<Box<dyn FnOnce(&mut World) -> (Handler<$ev>, DebugName) + Send + Sync>>,
             trigger: bool,
             capturing: bool,
         }
@@ -94,7 +101,8 @@ macro_rules! handler {
             {
                 Self {
                     handler: Some(Box::new(move |world: &mut World| {
-                        world.register_system(system.into_handler())
+                        let name = DebugName::type_name::<S>();
+                        (world.register_system(system.into_handler()), name)
                     })),
                     trigger: true,
                     capturing: false,
@@ -140,10 +148,11 @@ macro_rules! handler {
                     let trigger = ev.trigger;
                     let capturing = ev.capturing;
 
-                    let id = handler(world);
+                    let (id, name) = handler(world);
                     world.entity_mut(click).insert(EventHandler {
                         handler: id,
                         event: $name,
+                        name,
                         closure: None,
                         trigger,
                         capturing,
@@ -160,7 +169,8 @@ macro_rules! handler {
                     .0
                     .insert(core::any::TypeId::of::<$ev>())
                 {
-                    app.add_systems(PostUpdate, manage_handlers::<$ev>.after(DomSystems::Attach));
+                    app.add_systems(PostUpdate, manage_handlers::<$ev>.after(DomSystems::Attach))
+                        .add_observer(EventHandler::<$ev>::observe_replace_event_of);
                 }
             }
         }
@@ -180,6 +190,7 @@ handler! { OnKeyDown, "keydown", web_sys::KeyboardEvent }
 #[component(on_replace = Self::on_replace_hook)]
 pub struct EventHandler<E: FromWasmAbi + 'static> {
     handler: Handler<E>,
+    name: DebugName,
     event: &'static str,
     closure: Option<SendWrapper<Closure<dyn FnMut(E)>>>,
     /// Trigger an ECS update cycle.
@@ -188,20 +199,48 @@ pub struct EventHandler<E: FromWasmAbi + 'static> {
 }
 
 impl<E: FromWasmAbi + 'static> EventHandler<E> {
+    fn observe_replace_event_of(
+        trigger: On<Replace, EventOf>,
+        mut event: Query<(&EventOf, &mut Self)>,
+        target: Query<&EventTarget>,
+    ) -> Result {
+        let Ok((target_entity, mut handler)) = event.get_mut(trigger.target()) else {
+            return Ok(());
+        };
+        let Ok(target) = target.get(target_entity.0) else {
+            return Ok(());
+        };
+
+        if let Some(closure) = handler.closure.take() {
+            target
+                .remove_event_listener_with_callback_and_bool(
+                    handler.event,
+                    closure.as_ref().unchecked_ref(),
+                    handler.capturing,
+                )
+                .js_err()?;
+        }
+
+        Ok(())
+    }
+
     fn on_replace_hook(mut world: DeferredWorld, context: HookContext) {
-        let Some(handler) = world.get::<EventHandler<E>>(context.entity) else {
+        let Some(handler) = world.get::<Self>(context.entity) else {
+            return;
+        };
+        let handler_system = handler.handler;
+        world.commands().unregister_system(handler_system);
+
+        let handler = world.get::<Self>(context.entity).unwrap();
+        let Some(event_target) = world.get::<EventOf>(context.entity).map(|e| e.0) else {
+            return;
+        };
+        let Some(node) = world.get::<EventTarget>(event_target).cloned() else {
             return;
         };
 
-        let Some(node) = world.get::<EventOf>(context.entity) else {
-            return;
-        };
-
-        let Some(node) = world.get::<EventTarget>(node.0) else {
-            return;
-        };
-
-        if let Some(closure) = handler.closure.as_ref() {
+        let mut handler = world.get_mut::<EventHandler<E>>(context.entity).unwrap();
+        if let Some(closure) = handler.closure.take() {
             node.remove_event_listener_with_callback_and_bool(
                 handler.event,
                 closure.as_ref().unchecked_ref(),
@@ -209,44 +248,63 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
             )
             .unwrap();
         }
-
-        let handler = handler.handler;
-        world.commands().unregister_system(handler);
     }
 }
 
 fn manage_handlers<E>(
-    mut handlers: Query<(Entity, &mut EventHandler<E>, &EventOf), Changed<EventHandler<E>>>,
+    mut handlers: Query<
+        (Entity, &mut EventHandler<E>, &EventOf),
+        (Changed<EventHandler<E>>, Changed<EventOf>),
+    >,
     nodes: Query<&EventTarget>,
 ) -> Result
 where
     E: FromWasmAbi + 'static,
 {
-    for (entity, mut handler, node) in &mut handlers {
-        let node = nodes.get(node.0)?;
+    for (entity, mut handler, node_entity) in &mut handlers {
+        let node = nodes.get(node_entity.0)?;
         let id = handler.handler;
         let trigger = handler.trigger;
+        let name = handler.name.clone();
         let function = Closure::new(move |ev: E| {
-            let result = crate::web_runner::app_scope(|app| -> Result {
+            crate::web_runner::app_scope(|app| {
                 let world = app.world_mut();
-                world.run_system_with(
+                let result = world.run_system_with(
                     id,
                     Event {
                         entity,
                         event: SendWrapper::new(ev),
                     },
-                )??;
+                );
 
                 if trigger {
                     world.resource::<ScheduleTrigger>().trigger();
                 }
 
-                Ok(())
-            });
+                world.flush();
 
-            if let Err(e) = result {
-                log::error!("{e}");
-            }
+                match result {
+                    Ok(Err(e)) | Err(RegisteredSystemError::Failed(e)) => {
+                        let tick = world.change_tick();
+                        match app.get_error_handler() {
+                            Some(error_handler) => error_handler(
+                                e,
+                                ErrorContext::System {
+                                    name: name.clone(),
+                                    last_run: tick,
+                                },
+                            ),
+                            None => {
+                                log::error!("Failed to execute event handler: {e:?}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to execute event handler: {e:?}");
+                    }
+                    Ok(Ok(())) => {}
+                }
+            });
         });
 
         node.add_event_listener_with_callback_and_bool(

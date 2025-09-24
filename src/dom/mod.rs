@@ -150,7 +150,8 @@ fn reparent(
 
 pub mod prelude {
     pub use super::attributes::*;
+    pub use super::class::*;
     pub use super::events::*;
     pub use super::html::{elements::*, svg::*, *};
-    pub use crate::{class, events};
+    pub use crate::{class, classes, events};
 }
