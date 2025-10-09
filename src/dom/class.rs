@@ -74,7 +74,7 @@ impl Class {
         class: Query<(&Self, &ClassOf)>,
         element: Query<&Element>,
     ) -> Result {
-        let Ok((class, parent)) = class.get(trigger.target()) else {
+        let Ok((class, parent)) = class.get(trigger.entity) else {
             return Ok(());
         };
         let Ok(element) = element.get(parent.0) else {

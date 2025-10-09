@@ -4,6 +4,7 @@ use bevy_app::prelude::*;
 
 pub mod dom;
 pub mod js_err;
+pub mod task;
 mod web_runner;
 
 #[cfg(feature = "router")]

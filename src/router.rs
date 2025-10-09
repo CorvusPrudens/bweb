@@ -229,6 +229,8 @@ fn resolve_routes(
                                 let archetype = entity.archetype();
                                 let components: Vec<_> = archetype
                                     .components()
+                                    .iter()
+                                    .copied()
                                     .filter(|c| *c != route_id && *c != child_id)
                                     .collect();
 

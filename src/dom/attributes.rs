@@ -32,6 +32,7 @@ impl Plugin for AttributePlugin {
                 Disabled::plugin,
                 Download::plugin,
             ),
+            (Hidden::plugin,),
         ));
     }
 }
@@ -99,7 +100,7 @@ macro_rules! attribute {
             }
 
             fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
-                let Ok(element) = attr.get(trigger.target()) else {
+                let Ok(element) = attr.get(trigger.entity) else {
                     return Ok(());
                 };
 
@@ -139,9 +140,7 @@ macro_rules! boolean_attribute {
             fn attach(attrs: Query<Option<&Element>, (Changed<Self>, With<Self>)>) -> Result {
                 for element in &attrs {
                     let Some(element) = element else {
-                        return Err(
-                            format!("'{}' attribute requires an HTML Element", $attr).into()
-                        );
+                        return Err(format!("'{}' attribute requires a DOM Element", $attr).into());
                     };
 
                     element.set_attribute($attr, "").js_err()?;
@@ -151,7 +150,7 @@ macro_rules! boolean_attribute {
             }
 
             fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
-                let Ok(element) = attr.get(trigger.target()) else {
+                let Ok(element) = attr.get(trigger.entity) else {
                     return Ok(());
                 };
 
@@ -171,3 +170,44 @@ boolean_attribute! {Autoplay, "autoplay"}
 boolean_attribute! {Loop, "loop"}
 boolean_attribute! {Disabled, "disabled"}
 boolean_attribute! {Download, "download"}
+
+// Enumerated attributes
+#[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Hidden {
+    Hidden,
+    UntilFound,
+}
+
+impl Hidden {
+    fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
+        for (attr, element) in &attrs {
+            let Some(element) = element else {
+                return Err("'hidden' attribute requires a DOM Element".into());
+            };
+
+            match attr {
+                Self::Hidden => {
+                    element.set_attribute("hidden", "hidden").js_err()?;
+                }
+                Self::UntilFound => {
+                    element.set_attribute("hidden", "until-found").js_err()?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
+        let Ok(element) = attr.get(trigger.entity) else {
+            return Ok(());
+        };
+
+        element.remove_attribute("hidden").js_err()
+    }
+
+    fn plugin(app: &mut App) {
+        app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
+            .add_observer(Self::observe_remove);
+    }
+}

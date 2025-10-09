@@ -61,7 +61,7 @@ impl InnerHtml {
     }
 
     fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) {
-        let Ok(element) = attr.get(trigger.target()) else {
+        let Ok(element) = attr.get(trigger.entity) else {
             return;
         };
 

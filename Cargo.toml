@@ -8,14 +8,14 @@ default = ["router"]
 router = ["web-sys/Url", "web-sys/History"]
 
 [dependencies]
-bevy_app = { git = "https://github.com/cart/bevy", branch = "next-gen-scenes", default-features = false, features = [
+bevy_app = { version = "0.17.1", default-features = false, features = [
   "std",
   "web",
 ] }
-bevy_ecs = { git = "https://github.com/cart/bevy", branch = "next-gen-scenes", default-features = false, features = [
+bevy_ecs = { version = "0.17.1", default-features = false, features = [
   "std",
 ] }
-bevy_utils = { git = "https://github.com/cart/bevy", branch = "next-gen-scenes", default-features = false, features = [
+bevy_utils = { version = "0.17.1", default-features = false, features = [
   "std",
 ] }
 log = { version = "0.4", default-features = false }
@@ -43,4 +43,5 @@ features = [
   "PopStateEvent",
   "KeyboardEvent",
   "SvgElement",
+  "Navigator",
 ]

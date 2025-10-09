@@ -28,6 +28,8 @@ impl Plugin for EventsPlugin {
             OnPointerDown::plugin,
             OnPointerMove::plugin,
             OnPointerUp::plugin,
+            OnPointerEnter::plugin,
+            OnPointerLeave::plugin,
             OnContextMenu::plugin,
             OnKeyDown::plugin,
         ));
@@ -181,6 +183,8 @@ handler! { OnClick, "click", web_sys::PointerEvent }
 handler! { OnPointerDown, "pointerdown", web_sys::PointerEvent }
 handler! { OnPointerMove, "pointermove", web_sys::PointerEvent }
 handler! { OnPointerUp, "pointerup", web_sys::PointerEvent }
+handler! { OnPointerEnter, "pointerenter", web_sys::PointerEvent }
+handler! { OnPointerLeave, "pointerleave", web_sys::PointerEvent }
 handler! { OnContextMenu, "contextmenu", web_sys::PointerEvent }
 handler! { OnPopState, "popstate", web_sys::PopStateEvent }
 handler! { OnSelectStart, "selectstart", web_sys::Event }
@@ -204,14 +208,14 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
         mut event: Query<(&EventOf, &mut Self)>,
         target: Query<&EventTarget>,
     ) -> Result {
-        let Ok((target_entity, mut handler)) = event.get_mut(trigger.target()) else {
+        let Ok((target_entity, handler)) = event.get_mut(trigger.entity) else {
             return Ok(());
         };
         let Ok(target) = target.get(target_entity.0) else {
             return Ok(());
         };
 
-        if let Some(closure) = handler.closure.take() {
+        if let Some(closure) = handler.closure.as_ref() {
             target
                 .remove_event_listener_with_callback_and_bool(
                     handler.event,
@@ -231,7 +235,6 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
         let handler_system = handler.handler;
         world.commands().unregister_system(handler_system);
 
-        let handler = world.get::<Self>(context.entity).unwrap();
         let Some(event_target) = world.get::<EventOf>(context.entity).map(|e| e.0) else {
             return;
         };
@@ -254,7 +257,7 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
 fn manage_handlers<E>(
     mut handlers: Query<
         (Entity, &mut EventHandler<E>, &EventOf),
-        (Changed<EventHandler<E>>, Changed<EventOf>),
+        Or<(Changed<EventHandler<E>>, Changed<EventOf>)>,
     >,
     nodes: Query<&EventTarget>,
 ) -> Result
@@ -263,58 +266,71 @@ where
 {
     for (entity, mut handler, node_entity) in &mut handlers {
         let node = nodes.get(node_entity.0)?;
-        let id = handler.handler;
-        let trigger = handler.trigger;
-        let name = handler.name.clone();
-        let function = Closure::new(move |ev: E| {
-            crate::web_runner::app_scope(|app| {
-                let world = app.world_mut();
-                let result = world.run_system_with(
-                    id,
-                    Event {
-                        entity,
-                        event: SendWrapper::new(ev),
-                    },
-                );
 
-                if trigger {
-                    world.resource::<ScheduleTrigger>().trigger();
-                }
+        match handler.closure.as_ref() {
+            Some(closure) => {
+                node.add_event_listener_with_callback_and_bool(
+                    handler.event,
+                    closure.as_ref().unchecked_ref(),
+                    handler.capturing,
+                )
+                .js_err()?;
+            }
+            None => {
+                let id = handler.handler;
+                let trigger = handler.trigger;
+                let name = handler.name.clone();
+                let function = Closure::new(move |ev: E| {
+                    crate::web_runner::app_scope(|app| {
+                        let world = app.world_mut();
+                        let result = world.run_system_with(
+                            id,
+                            Event {
+                                entity,
+                                event: SendWrapper::new(ev),
+                            },
+                        );
 
-                world.flush();
+                        if trigger {
+                            world.resource::<ScheduleTrigger>().trigger();
+                        }
 
-                match result {
-                    Ok(Err(e)) | Err(RegisteredSystemError::Failed(e)) => {
-                        let tick = world.change_tick();
-                        match app.get_error_handler() {
-                            Some(error_handler) => error_handler(
-                                e,
-                                ErrorContext::System {
-                                    name: name.clone(),
-                                    last_run: tick,
-                                },
-                            ),
-                            None => {
+                        world.flush();
+
+                        match result {
+                            Ok(Err(e)) | Err(RegisteredSystemError::Failed(e)) => {
+                                let tick = world.change_tick();
+                                match app.get_error_handler() {
+                                    Some(error_handler) => error_handler(
+                                        e,
+                                        ErrorContext::System {
+                                            name: name.clone(),
+                                            last_run: tick,
+                                        },
+                                    ),
+                                    None => {
+                                        log::error!("Failed to execute event handler: {e:?}");
+                                    }
+                                }
+                            }
+                            Err(e) => {
                                 log::error!("Failed to execute event handler: {e:?}");
                             }
+                            Ok(Ok(())) => {}
                         }
-                    }
-                    Err(e) => {
-                        log::error!("Failed to execute event handler: {e:?}");
-                    }
-                    Ok(Ok(())) => {}
-                }
-            });
-        });
+                    });
+                });
 
-        node.add_event_listener_with_callback_and_bool(
-            handler.event,
-            function.as_ref().unchecked_ref(),
-            handler.capturing,
-        )
-        .js_err()?;
+                node.add_event_listener_with_callback_and_bool(
+                    handler.event,
+                    function.as_ref().unchecked_ref(),
+                    handler.capturing,
+                )
+                .js_err()?;
 
-        handler.closure = Some(SendWrapper::new(function));
+                handler.closure = Some(SendWrapper::new(function));
+            }
+        }
     }
 
     Ok(())

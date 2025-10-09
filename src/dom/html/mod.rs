@@ -53,12 +53,14 @@ macro_rules! web_wrapper {
 
 web_wrapper!(Window);
 web_wrapper!(Document);
+web_wrapper!(Navigator);
 
 fn initialize_window(mut commands: Commands) -> Result {
     let window = web_sys::window().ok_or("browser window should be available")?;
     let window_target: &web_sys::EventTarget = &window;
 
     commands.spawn((
+        Navigator(SendWrapper::new(window.navigator())),
         EventTarget(SendWrapper::new(window_target.clone())),
         Window(SendWrapper::new(window.clone())),
     ));
