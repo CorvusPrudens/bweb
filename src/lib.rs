@@ -4,6 +4,7 @@ use bevy_app::prelude::*;
 
 pub mod dom;
 pub mod js_err;
+pub mod relative_mouse;
 pub mod task;
 mod web_runner;
 
@@ -17,6 +18,7 @@ impl Plugin for BwebPlugin {
         app.add_plugins((
             web_runner::WebRunnerPlugin,
             dom::DomPlugin,
+            relative_mouse::RelativeMousePlugin,
             #[cfg(feature = "router")]
             router::RouterPlugin,
         ));

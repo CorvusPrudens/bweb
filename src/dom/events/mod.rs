@@ -1,5 +1,6 @@
 use super::{DomSystems, html::EventTarget};
-use crate::{js_err::JsErr, web_runner::ScheduleTrigger};
+use crate::js_err::JsErr;
+use bevy_added::{AddStopObserver, Stop};
 use bevy_app::prelude::*;
 use bevy_ecs::{
     error::ErrorContext,
@@ -32,6 +33,8 @@ impl Plugin for EventsPlugin {
             OnPointerLeave::plugin,
             OnContextMenu::plugin,
             OnKeyDown::plugin,
+            OnBlur::plugin,
+            OnInput::plugin,
         ));
     }
 }
@@ -172,7 +175,7 @@ macro_rules! handler {
                     .insert(core::any::TypeId::of::<$ev>())
                 {
                     app.add_systems(PostUpdate, manage_handlers::<$ev>.after(DomSystems::Attach))
-                        .add_observer(EventHandler::<$ev>::observe_replace_event_of);
+                        .add_stop_observer(EventHandler::<$ev>::stop_event);
                 }
             }
         }
@@ -189,6 +192,8 @@ handler! { OnContextMenu, "contextmenu", web_sys::PointerEvent }
 handler! { OnPopState, "popstate", web_sys::PopStateEvent }
 handler! { OnSelectStart, "selectstart", web_sys::Event }
 handler! { OnKeyDown, "keydown", web_sys::KeyboardEvent }
+handler! { OnBlur, "blur", web_sys::FocusEvent }
+handler! { OnInput, "input", web_sys::InputEvent }
 
 #[derive(Debug, Component)]
 #[component(on_replace = Self::on_replace_hook)]
@@ -203,19 +208,12 @@ pub struct EventHandler<E: FromWasmAbi + 'static> {
 }
 
 impl<E: FromWasmAbi + 'static> EventHandler<E> {
-    fn observe_replace_event_of(
-        trigger: On<Replace, EventOf>,
-        mut event: Query<(&EventOf, &mut Self)>,
-        target: Query<&EventTarget>,
-    ) -> Result {
-        let Ok((target_entity, handler)) = event.get_mut(trigger.entity) else {
-            return Ok(());
-        };
-        let Ok(target) = target.get(target_entity.0) else {
-            return Ok(());
-        };
+    fn stop_event(data: Stop<(&EventOf, &Self)>, target: Query<&EventTarget>) -> Result {
+        let (target_entity, handler) = data.into_inner();
 
-        if let Some(closure) = handler.closure.as_ref() {
+        if let Ok(target) = target.get(target_entity.0)
+            && let Some(closure) = handler.closure.as_ref()
+        {
             target
                 .remove_event_listener_with_callback_and_bool(
                     handler.event,
@@ -228,29 +226,13 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
         Ok(())
     }
 
+    // This runs after the above observer when the handler is removed.
     fn on_replace_hook(mut world: DeferredWorld, context: HookContext) {
         let Some(handler) = world.get::<Self>(context.entity) else {
             return;
         };
         let handler_system = handler.handler;
         world.commands().unregister_system(handler_system);
-
-        let Some(event_target) = world.get::<EventOf>(context.entity).map(|e| e.0) else {
-            return;
-        };
-        let Some(node) = world.get::<EventTarget>(event_target).cloned() else {
-            return;
-        };
-
-        let mut handler = world.get_mut::<EventHandler<E>>(context.entity).unwrap();
-        if let Some(closure) = handler.closure.take() {
-            node.remove_event_listener_with_callback_and_bool(
-                handler.event,
-                closure.as_ref().unchecked_ref(),
-                handler.capturing,
-            )
-            .unwrap();
-        }
     }
 }
 
@@ -291,12 +273,6 @@ where
                             },
                         );
 
-                        if trigger {
-                            world.resource::<ScheduleTrigger>().trigger();
-                        }
-
-                        world.flush();
-
                         match result {
                             Ok(Err(e)) | Err(RegisteredSystemError::Failed(e)) => {
                                 let tick = world.change_tick();
@@ -317,6 +293,12 @@ where
                                 log::error!("Failed to execute event handler: {e:?}");
                             }
                             Ok(Ok(())) => {}
+                        }
+
+                        if trigger {
+                            // prefer synchronous execution
+                            // world.resource::<ScheduleTrigger>().trigger();
+                            app.update();
                         }
                     });
                 });

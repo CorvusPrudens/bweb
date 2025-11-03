@@ -425,3 +425,15 @@ pub struct SelectedContent;
 #[derive(Debug, Default, Component, Clone, PartialEq, Eq)]
 #[require(HtmlElementName("textarea"))]
 pub struct TextArea;
+
+#[derive(Debug, Default, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("h1"))]
+pub struct H1;
+
+#[derive(Debug, Default, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("h2"))]
+pub struct H2;
+
+#[derive(Debug, Default, Component, Clone, PartialEq, Eq)]
+#[require(HtmlElementName("h3"))]
+pub struct H3;

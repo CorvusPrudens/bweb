@@ -18,7 +18,6 @@ impl Plugin for AttributePlugin {
                 Src::plugin,
                 Target::plugin,
                 Tabindex::plugin,
-                Draggable::plugin,
             ),
             (
                 D::plugin,
@@ -32,7 +31,7 @@ impl Plugin for AttributePlugin {
                 Disabled::plugin,
                 Download::plugin,
             ),
-            (Hidden::plugin,),
+            (Hidden::plugin, Draggable::plugin, ContentEditable::plugin),
         ));
     }
 }
@@ -123,7 +122,6 @@ attribute! {Height, "height"}
 attribute! {Src, "src"}
 attribute! {Target, "target"}
 attribute! {Tabindex, "tabindex"}
-attribute! {Draggable, "draggable"}
 attribute! {D, "d"}
 attribute! {Lang, "lang"}
 attribute! {ViewBox, "viewBox"}
@@ -204,6 +202,87 @@ impl Hidden {
         };
 
         element.remove_attribute("hidden").js_err()
+    }
+
+    fn plugin(app: &mut App) {
+        app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
+            .add_observer(Self::observe_remove);
+    }
+}
+
+// Enumerated attributes
+#[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Draggable(pub bool);
+
+impl Draggable {
+    fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
+        for (attr, element) in &attrs {
+            let Some(element) = element else {
+                return Err("'draggable' attribute requires a DOM Element".into());
+            };
+
+            if attr.0 {
+                element.set_attribute("draggable", "true").js_err()?;
+            } else {
+                element.set_attribute("draggable", "false").js_err()?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
+        let Ok(element) = attr.get(trigger.entity) else {
+            return Ok(());
+        };
+
+        element.remove_attribute("draggable").js_err()
+    }
+
+    fn plugin(app: &mut App) {
+        app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
+            .add_observer(Self::observe_remove);
+    }
+}
+
+#[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContentEditable {
+    True,
+    False,
+    PlaintextOnly,
+}
+
+impl ContentEditable {
+    fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
+        for (attr, element) in &attrs {
+            let Some(element) = element else {
+                return Err("'contenteditable' attribute requires a DOM Element".into());
+            };
+
+            match attr {
+                Self::True => {
+                    element.set_attribute("contenteditable", "true").js_err()?;
+                }
+                Self::False => {
+                    element.set_attribute("contenteditable", "false").js_err()?;
+                }
+                Self::PlaintextOnly => {
+                    element
+                        .set_attribute("contenteditable", "plaintext-only")
+                        .js_err()?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
+        let Ok(element) = attr.get(trigger.entity) else {
+            return Ok(());
+        };
+
+        element.remove_attribute("contenteditable").js_err()
     }
 
     fn plugin(app: &mut App) {

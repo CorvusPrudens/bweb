@@ -104,6 +104,7 @@ fn initialize_window(mut commands: Commands) -> Result {
         HtmlElement(SendWrapper::new(body.clone())),
         Element(SendWrapper::new(body.clone().dyn_into().unwrap())),
         Node(SendWrapper::new(body.dyn_into().unwrap())),
+        crate::relative_mouse::RelativeMouse::default(),
     ));
 
     Ok(())
@@ -153,8 +154,17 @@ impl Node {
 }
 
 /// An HTML element inserter.
-#[derive(Debug, Component)]
+#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[component(on_replace = Self::on_replace_hook)]
 pub struct HtmlElementName(pub &'static str);
+
+impl HtmlElementName {
+    fn on_replace_hook(mut world: DeferredWorld, context: HookContext) {
+        if let Ok(mut entity) = world.commands().get_entity(context.entity) {
+            entity.try_remove::<(Node, EventTarget, HtmlElement, Element)>();
+        }
+    }
+}
 
 fn inject_element(
     elements: Query<(Entity, &HtmlElementName), Without<Node>>,
@@ -180,6 +190,14 @@ fn inject_element(
 
 #[derive(Debug, Component, Clone, PartialEq, Eq)]
 pub struct Text(Cow<'static, str>);
+
+impl core::ops::Deref for Text {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl Text {
     pub fn new(text: impl Into<Cow<'static, str>>) -> Self {

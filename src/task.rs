@@ -18,6 +18,10 @@ use crate::web_runner::ScheduleTrigger;
 pub struct TaskWorld(());
 
 impl TaskWorld {
+    pub fn resource<R: Resource + Clone>(&mut self) -> R {
+        self.with_trigger(false, |world| world.resource::<R>().clone())
+    }
+
     /// Run a one-shot system.
     pub fn run<S, O, M>(&mut self, system: S) -> Result<O>
     where
@@ -37,9 +41,22 @@ impl TaskWorld {
     where
         F: FnOnce(&mut World) -> O,
     {
+        Self::with_trigger(self, true, func)
+    }
+
+    /// Run a closure with access to the world.
+    ///
+    /// If `trigger` is `true`, the main schedule will execute
+    /// at the next await point.
+    pub fn with_trigger<F, O>(&mut self, trigger: bool, func: F) -> O
+    where
+        F: FnOnce(&mut World) -> O,
+    {
         crate::web_runner::app_scope(|app| {
             let world = app.world_mut();
-            world.resource::<ScheduleTrigger>().trigger();
+            if trigger {
+                world.resource::<ScheduleTrigger>().trigger();
+            }
             let result = func(world);
             world.flush();
             result
@@ -100,4 +117,74 @@ where
             Ok(()) => {}
         })
     })
+}
+
+pub trait Microtask<M>: 'static {
+    fn run(self, world: &mut World) -> Result;
+}
+
+impl<F> Microtask<InfallibleTask> for F
+where
+    F: FnOnce(&mut World) + 'static,
+{
+    fn run(self, world: &mut World) -> Result {
+        Ok(self(world))
+    }
+}
+
+impl<F> Microtask<FallibleTask> for F
+where
+    F: FnOnce(&mut World) -> Result + 'static,
+{
+    fn run(self, world: &mut World) -> Result {
+        self(world)
+    }
+}
+
+/// A microtask is a short function which will run after the current task has
+/// completed its work and when there is no other code waiting to be run before
+/// control of the execution context is returned to the browser's event loop.
+///
+/// Microtasks are especially useful for libraries and frameworks that need
+/// to perform final cleanup or other just-before-rendering tasks.
+///
+/// [MDN queueMicrotask](https://developer.mozilla.org/en-US/docs/Web/API/queueMicrotask)
+pub fn queue_microtask<F, M>(task: F)
+where
+    F: Microtask<M>,
+{
+    use js_sys::{Function, Reflect};
+    use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+
+    let window = web_sys::window().expect("Attempted to queue microtask on non-web platform");
+
+    let task = Closure::once_into_js(move || {
+        crate::web_runner::app_scope(|app| {
+            let result = task.run(app.world_mut());
+
+            match result {
+                Err(e) => {
+                    let tick = app.world_mut().change_tick();
+                    match app.get_error_handler() {
+                        Some(error_handler) => error_handler(
+                            e,
+                            ErrorContext::System {
+                                name: bevy_utils::prelude::DebugName::type_name::<F>(),
+                                last_run: tick,
+                            },
+                        ),
+                        None => {
+                            log::error!("Failed to execute async task: {e:?}");
+                        }
+                    }
+                }
+                Ok(()) => {}
+            }
+        })
+    });
+
+    let queue_microtask = Reflect::get(&window, &JsValue::from_str("queueMicrotask"))
+        .expect("queueMicrotask not available");
+    let queue_microtask = queue_microtask.unchecked_into::<Function>();
+    _ = queue_microtask.call1(&JsValue::UNDEFINED, &task);
 }

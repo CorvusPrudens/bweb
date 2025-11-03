@@ -49,9 +49,8 @@ fn web_runner(mut receiver: mpsc::UnboundedReceiver<()>) -> impl FnOnce(App) -> 
             loop {
                 if receiver.next().await.is_some() {
                     while receiver.try_next().is_ok_and(|r| r.is_some()) {}
-                    let exit = APP.with(|app| {
-                        let mut app = app.borrow_mut();
 
+                    let exit = app_scope(|app| {
                         match app.plugins_state() {
                             bevy_app::PluginsState::Adding => {
                                 // ?
@@ -80,42 +79,6 @@ fn web_runner(mut receiver: mpsc::UnboundedReceiver<()>) -> impl FnOnce(App) -> 
                 }
             }
         });
-
-        // let func = Rc::<RefCell<Option<Closure<dyn FnMut()>>>>::new(RefCell::new(None));
-        // let function = wasm_bindgen::closure::Closure::new({
-        //     let func = func.clone();
-        //     let window = window.clone();
-        //     move || {
-        //         match app.plugins_state() {
-        //             bevy_app::PluginsState::Adding => {
-        //                 // ?
-        //             }
-        //             bevy_app::PluginsState::Ready => {
-        //                 app.finish();
-        //             }
-        //             bevy_app::PluginsState::Finished => {
-        //                 app.cleanup();
-        //             }
-        //             bevy_app::PluginsState::Cleaned => {
-        //                 app.update();
-        //             }
-        //         }
-        //
-        //         if let Some(exit) = app.should_exit() {
-        //             bevy_log::info!("App exited: {exit:?}");
-        //         } else {
-        //             window
-        //                 .request_animation_frame(
-        //                     func.borrow().as_ref().unwrap().as_ref().unchecked_ref(),
-        //                 )
-        //                 .unwrap();
-        //         }
-        //     }
-        // });
-        // *func.borrow_mut() = Some(function);
-        // window
-        //     .request_animation_frame(func.borrow().as_ref().unwrap().as_ref().unchecked_ref())
-        //     .unwrap();
 
         AppExit::Success
     }
