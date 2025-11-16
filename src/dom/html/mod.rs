@@ -8,6 +8,7 @@ use wasm_bindgen::JsCast;
 
 pub mod elements;
 mod inner_html;
+pub mod properties;
 pub mod svg;
 
 pub use inner_html::InnerHtml;
@@ -16,17 +17,24 @@ pub(super) struct HtmlPlugin;
 
 impl Plugin for HtmlPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((svg::SvgPlugin, InnerHtml::plugin))
-            .add_systems(
-                PreStartup,
-                initialize_window.in_set(DomStartupSystems::Window),
+        app.add_plugins((
+            svg::SvgPlugin,
+            InnerHtml::plugin,
+            properties::PropertyPlugin,
+        ))
+        .add_systems(
+            PreStartup,
+            initialize_window.in_set(DomStartupSystems::Window),
+        )
+        .add_systems(
+            PostUpdate,
+            (
+                update_text,
+                (inject_element, inject_input_element, inject_text),
             )
-            .add_systems(
-                PostUpdate,
-                ((update_text, (inject_element, inject_text))
-                    .chain()
-                    .in_set(DomSystems::Insert),),
-            );
+                .chain()
+                .in_set(DomSystems::Insert),
+        );
     }
 }
 
@@ -111,6 +119,7 @@ fn initialize_window(mut commands: Commands) -> Result {
 }
 
 web_wrapper!(HtmlElement);
+web_wrapper!(HtmlInputElement);
 web_wrapper!(Element);
 web_wrapper!(EventTarget);
 web_wrapper!(SvgElement);
@@ -183,6 +192,24 @@ fn inject_element(
             Element(SendWrapper::new(element.clone().dyn_into().unwrap())),
             Node(SendWrapper::new(element.dyn_into().unwrap())),
         ));
+    }
+
+    Ok(())
+}
+
+fn inject_input_element(
+    elements: Query<(Entity, &HtmlElement), (With<elements::Input>, Without<HtmlInputElement>)>,
+    mut commands: Commands,
+) -> Result {
+    for (entity, element) in &elements {
+        let input_element = element
+            .0
+            .dyn_ref::<web_sys::HtmlInputElement>()
+            .ok_or("Expected `HtmlInputElement`")?;
+
+        commands
+            .entity(entity)
+            .insert(HtmlInputElement(SendWrapper::new(input_element.clone())));
     }
 
     Ok(())

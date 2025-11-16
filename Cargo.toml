@@ -36,6 +36,8 @@ features = [
   "Element",
   "DomRect",
   "HtmlElement",
+  "HtmlInputElement",
+  "WheelEvent",
   "HtmlHeadElement",
   "CssStyleDeclaration",
   "Document",

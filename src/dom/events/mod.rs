@@ -14,8 +14,10 @@ use send_wrapper::SendWrapper;
 use std::{any::TypeId, collections::HashSet};
 use wasm_bindgen::{JsCast, convert::FromWasmAbi, prelude::Closure};
 
+mod defer;
 mod handler;
 
+pub use defer::*;
 pub use handler::*;
 
 pub(super) struct EventsPlugin;
@@ -35,6 +37,8 @@ impl Plugin for EventsPlugin {
             OnKeyDown::plugin,
             OnBlur::plugin,
             OnInput::plugin,
+            OnChange::plugin,
+            OnWheel::plugin,
         ));
     }
 }
@@ -194,6 +198,8 @@ handler! { OnSelectStart, "selectstart", web_sys::Event }
 handler! { OnKeyDown, "keydown", web_sys::KeyboardEvent }
 handler! { OnBlur, "blur", web_sys::FocusEvent }
 handler! { OnInput, "input", web_sys::InputEvent }
+handler! { OnChange, "change", web_sys::Event }
+handler! { OnWheel, "wheel", web_sys::WheelEvent }
 
 #[derive(Debug, Component)]
 #[component(on_replace = Self::on_replace_hook)]
@@ -263,7 +269,7 @@ where
                 let trigger = handler.trigger;
                 let name = handler.name.clone();
                 let function = Closure::new(move |ev: E| {
-                    crate::web_runner::app_scope(|app| {
+                    let res = crate::web_runner::app_scope(|app| {
                         let world = app.world_mut();
                         let result = world.run_system_with(
                             id,
@@ -301,6 +307,10 @@ where
                             app.update();
                         }
                     });
+
+                    if res.is_err() {
+                        log::error!("Failed to borrow app for event handler");
+                    }
                 });
 
                 node.add_event_listener_with_callback_and_bool(

@@ -1,7 +1,7 @@
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use futures::{StreamExt, channel::mpsc};
-use std::cell::RefCell;
+use std::cell::{BorrowMutError, RefCell};
 
 pub struct WebRunnerPlugin;
 
@@ -20,14 +20,13 @@ thread_local! {
     static APP: RefCell<App> = panic!("world not initialized");
 }
 
-pub fn app_scope<F, R>(func: F) -> R
+pub fn app_scope<F, R>(func: F) -> Result<R, BorrowMutError>
 where
     F: FnOnce(&mut App) -> R,
 {
     APP.with(|app| {
-        let mut app = app.borrow_mut();
-
-        func(&mut app)
+        let mut app = app.try_borrow_mut()?;
+        Ok(func(&mut app))
     })
 }
 
@@ -72,7 +71,7 @@ fn web_runner(mut receiver: mpsc::UnboundedReceiver<()>) -> impl FnOnce(App) -> 
                         app.should_exit()
                     });
 
-                    if let Some(exit) = exit {
+                    if let Ok(Some(exit)) = exit {
                         log::info!("App exiting: {exit:?}");
                         break;
                     }

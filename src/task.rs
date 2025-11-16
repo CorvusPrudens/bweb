@@ -61,6 +61,7 @@ impl TaskWorld {
             world.flush();
             result
         })
+        .expect("failed to borrow app")
     }
 }
 
@@ -98,7 +99,7 @@ where
         let world = TaskWorld(());
         let result = task.run(world).await;
 
-        crate::web_runner::app_scope(|app| match result {
+        let res = crate::web_runner::app_scope(|app| match result {
             Err(e) => {
                 let tick = app.world_mut().change_tick();
                 match app.get_error_handler() {
@@ -115,7 +116,11 @@ where
                 }
             }
             Ok(()) => {}
-        })
+        });
+
+        if res.is_err() {
+            log::error!("Failed to borrow app in task.");
+        }
     })
 }
 
@@ -159,7 +164,7 @@ where
     let window = web_sys::window().expect("Attempted to queue microtask on non-web platform");
 
     let task = Closure::once_into_js(move || {
-        crate::web_runner::app_scope(|app| {
+        let res = crate::web_runner::app_scope(|app| {
             let result = task.run(app.world_mut());
 
             match result {
@@ -180,7 +185,11 @@ where
                 }
                 Ok(()) => {}
             }
-        })
+        });
+
+        if res.is_err() {
+            log::error!("Failed to borrow app for microtask.");
+        }
     });
 
     let queue_microtask = Reflect::get(&window, &JsValue::from_str("queueMicrotask"))

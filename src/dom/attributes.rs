@@ -87,9 +87,7 @@ macro_rules! attribute {
             fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
                 for (href, element) in &attrs {
                     let Some(element) = element else {
-                        return Err(
-                            format!("'{}' attribute requires an HTML Element", $attr).into()
-                        );
+                        return Err(format!("'{}' attribute requires an `Element`", $attr).into());
                     };
 
                     element.set_attribute($attr, &href.0).js_err()?;
