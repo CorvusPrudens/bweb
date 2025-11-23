@@ -1,11 +1,10 @@
-use std::sync::Arc;
-
 use crate::dom::{DomStartupSystems, prelude::*};
 use crate::dom::{DomSystems, events::Events};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use log::info;
+use std::sync::Arc;
 use wasm_bindgen::JsValue;
 
 // TODO: okay this should probably be a lil entity set guy
@@ -94,12 +93,12 @@ fn hook_into_anchors(
     anchors: Query<
         (
             Entity,
-            &Href,
+            &attr::Href,
             Option<&Events>,
-            Has<Download>,
-            Option<&Target>,
+            Has<attr::Download>,
+            Option<&attr::Target>,
         ),
-        (With<A>, Changed<Href>),
+        (With<A>, Changed<attr::Href>),
     >,
     events: Query<Entity, With<RouterLink>>,
     window: Single<&Window>,

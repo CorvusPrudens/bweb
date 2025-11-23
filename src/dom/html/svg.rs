@@ -1,5 +1,5 @@
 use crate::{
-    dom::{DomSystems, prelude::Xmlns},
+    dom::{DomSystems, prelude::attr::Xmlns},
     js_err::JsErr,
 };
 use bevy_app::prelude::*;

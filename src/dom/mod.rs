@@ -2,7 +2,7 @@ use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
-pub mod attributes;
+pub mod attr;
 pub mod class;
 pub mod events;
 pub mod html;
@@ -15,7 +15,7 @@ impl Plugin for DomPlugin {
             events::EventsPlugin,
             class::ClassPlugin,
             html::HtmlPlugin,
-            attributes::AttributePlugin,
+            attr::AttributePlugin,
         ))
         .configure_sets(
             PreStartup,
@@ -149,7 +149,7 @@ fn reparent(
 }
 
 pub mod prelude {
-    pub use super::attributes::*;
+    pub use super::attr;
     pub use super::class::*;
     pub use super::events::*;
     pub use super::html::{elements::*, properties::*, svg::*, *};
