@@ -18,11 +18,13 @@ bevy_ecs = { version = "0.17.1", default-features = false, features = [
 bevy_utils = { version = "0.17.1", default-features = false, features = [
   "std",
 ] }
-bevy_added = { path = "../becs-bweb/crates/bevy_added" }
+bevy_platform = { version = "0.17.1", default-features = false, features = ["alloc"] }
+bevy_query_observer = { path = "../becs-bweb/crates/bevy_query_observer" }
 log = { version = "0.4", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = [
   "alloc",
   "std",
+  "async-await",
 ] }
 send_wrapper = "0.6.0"
 wasm-bindgen = "0.2.100"

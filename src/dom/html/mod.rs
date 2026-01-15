@@ -2,6 +2,7 @@ use super::{DomStartupSystems, DomSystems};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
+use bevy_query_observer::{AddStopObserver, Stop};
 use send_wrapper::SendWrapper;
 use std::borrow::Cow;
 use wasm_bindgen::JsCast;
@@ -34,7 +35,8 @@ impl Plugin for HtmlPlugin {
             )
                 .chain()
                 .in_set(DomSystems::Insert),
-        );
+        )
+        .add_stop_observer(remove_text);
     }
 }
 
@@ -42,6 +44,12 @@ macro_rules! web_wrapper {
     ($ty:ident) => {
         #[derive(Debug, Component, Clone)]
         pub struct $ty(SendWrapper<web_sys::$ty>);
+
+        impl $ty {
+            pub fn new(value: web_sys::$ty) -> Self {
+                Self(SendWrapper::new(value))
+            }
+        }
 
         impl core::ops::Deref for $ty {
             type Target = web_sys::$ty;
@@ -252,4 +260,15 @@ fn update_text(texts: Query<(&Text, &Node), Changed<Text>>) {
         let node: &web_sys::Text = node.0.dyn_ref().unwrap();
         node.set_data(&text.0);
     }
+}
+
+fn remove_text(text: Stop<(&Node, &ChildOf), With<Text>>, parent: Query<&Element>) -> Result {
+    let (text, child_of) = text.into_inner();
+    let Ok(parent) = parent.get(child_of.0) else {
+        return Ok(());
+    };
+
+    parent.remove_child(text).js_err()?;
+
+    Ok(())
 }

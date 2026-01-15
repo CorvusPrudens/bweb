@@ -1,4 +1,4 @@
-#![allow(async_fn_in_trait)]
+#![allow(async_fn_in_trait, clippy::unit_arg, clippy::single_match)]
 
 use bevy_ecs::{
     error::ErrorContext,
@@ -55,7 +55,7 @@ impl TaskWorld {
         crate::web_runner::app_scope(|app| {
             let world = app.world_mut();
             if trigger {
-                world.resource::<ScheduleTrigger>().trigger();
+                world.resource::<ScheduleTrigger>().trigger_async();
             }
             let result = func(world);
             world.flush();
@@ -124,6 +124,35 @@ where
     })
 }
 
+/// A task that cancels when dropped.
+#[derive(Component, Debug)]
+pub struct TaskComponent(Option<futures::channel::oneshot::Sender<()>>);
+
+impl TaskComponent {
+    pub fn new<T, M>(task: T) -> Self
+    where
+        T: AsyncTask<M>,
+    {
+        let (tx, mut rx) = futures::channel::oneshot::channel();
+        spawn_local(async move |world: TaskWorld| {
+            use futures::FutureExt;
+
+            futures::select! {
+                result = task.run(world).fuse() => result,
+                _ = rx => Ok(())
+            }
+        });
+
+        Self(Some(tx))
+    }
+}
+
+impl Drop for TaskComponent {
+    fn drop(&mut self) {
+        let _ = self.0.take().unwrap().send(());
+    }
+}
+
 pub trait Microtask<M>: 'static {
     fn run(self, world: &mut World) -> Result;
 }
@@ -158,35 +187,41 @@ pub fn queue_microtask<F, M>(task: F)
 where
     F: Microtask<M>,
 {
+    app_scope_microtask(move |app| {
+        let result = task.run(app.world_mut());
+
+        match result {
+            Err(e) => {
+                let tick = app.world_mut().change_tick();
+                match app.get_error_handler() {
+                    Some(error_handler) => error_handler(
+                        e,
+                        ErrorContext::System {
+                            name: bevy_utils::prelude::DebugName::type_name::<F>(),
+                            last_run: tick,
+                        },
+                    ),
+                    None => {
+                        log::error!("Failed to execute async task: {e:?}");
+                    }
+                }
+            }
+            Ok(()) => {}
+        }
+    });
+}
+
+pub(crate) fn app_scope_microtask<F>(task: F)
+where
+    F: FnOnce(&mut bevy_app::App) + 'static,
+{
     use js_sys::{Function, Reflect};
     use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 
     let window = web_sys::window().expect("Attempted to queue microtask on non-web platform");
 
     let task = Closure::once_into_js(move || {
-        let res = crate::web_runner::app_scope(|app| {
-            let result = task.run(app.world_mut());
-
-            match result {
-                Err(e) => {
-                    let tick = app.world_mut().change_tick();
-                    match app.get_error_handler() {
-                        Some(error_handler) => error_handler(
-                            e,
-                            ErrorContext::System {
-                                name: bevy_utils::prelude::DebugName::type_name::<F>(),
-                                last_run: tick,
-                            },
-                        ),
-                        None => {
-                            log::error!("Failed to execute async task: {e:?}");
-                        }
-                    }
-                }
-                Ok(()) => {}
-            }
-        });
-
+        let res = crate::web_runner::app_scope(task);
         if res.is_err() {
             log::error!("Failed to borrow app for microtask.");
         }

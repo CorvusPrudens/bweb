@@ -1,140 +1,38 @@
 use super::{DomSystems, html::Element};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
-use bevy_ecs::prelude::*;
+use bevy_ecs::{
+    component::ComponentId,
+    lifecycle::HookContext,
+    prelude::*,
+    system::SystemChangeTick,
+    world::{DeferredWorld, EntityRefExcept},
+};
+use bevy_platform::collections::HashMap;
+use bevy_query_observer::{AddStopObserver, Stop};
 use std::borrow::Cow;
 
 pub(super) struct AttributePlugin;
 
 impl Plugin for AttributePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(Href::plugin);
-        app.add_plugins(Height::plugin);
-        app.add_plugins(D::plugin);
-        app.add_plugins(Lang::plugin);
-        app.add_plugins(ViewBox::plugin);
-        app.add_plugins(Xmlns::plugin);
-        app.add_plugins(Fill::plugin);
-
-        app.add_plugins(Accept::plugin);
-        app.add_plugins(AccessKey::plugin);
-        app.add_plugins(Action::plugin);
-        app.add_plugins(Allow::plugin);
-        app.add_plugins(Alpha::plugin);
-        app.add_plugins(Alt::plugin);
-        app.add_plugins(Async::plugin);
-        app.add_plugins(Autocapitalize::plugin);
-        app.add_plugins(As::plugin);
-        app.add_plugins(Autocomplete::plugin);
-        app.add_plugins(Autoplay::plugin);
-        app.add_plugins(Capture::plugin);
-        app.add_plugins(Charset::plugin);
-        app.add_plugins(Checked::plugin);
-        app.add_plugins(Cite::plugin);
-        app.add_plugins(Colorspace::plugin);
-        app.add_plugins(Cols::plugin);
-        app.add_plugins(ColSpan::plugin);
-        app.add_plugins(Content::plugin);
-        app.add_plugins(ContentEditable::plugin);
-        app.add_plugins(Controls::plugin);
-        app.add_plugins(Coords::plugin);
-        app.add_plugins(Crossorigin::plugin);
-        app.add_plugins(Csp::plugin);
         app.add_plugins(Data::plugin);
-        app.add_plugins(Datetime::plugin);
-        app.add_plugins(Decoding::plugin);
-        app.add_plugins(Default::plugin);
-        app.add_plugins(Defer::plugin);
-        app.add_plugins(Dir::plugin);
-        app.add_plugins(Dirname::plugin);
-        app.add_plugins(Disabled::plugin);
         app.add_plugins(Download::plugin);
-        app.add_plugins(Draggable::plugin);
-        app.add_plugins(Enctype::plugin);
-        app.add_plugins(EnterKeyHint::plugin);
-        app.add_plugins(ElementTiming::plugin);
-        app.add_plugins(FetchPriority::plugin);
-        app.add_plugins(For::plugin);
-        app.add_plugins(Form::plugin);
-        app.add_plugins(FormAction::plugin);
-        app.add_plugins(FormEnctype::plugin);
-        app.add_plugins(FormMethod::plugin);
-        app.add_plugins(FormNoValidate::plugin);
-        app.add_plugins(FormTarget::plugin);
-        app.add_plugins(Headers::plugin);
-        app.add_plugins(Hidden::plugin);
-        app.add_plugins(High::plugin);
-        app.add_plugins(HrefLang::plugin);
-        app.add_plugins(HttpEquiv::plugin);
-        app.add_plugins(Id::plugin);
-        app.add_plugins(Integrity::plugin);
-        app.add_plugins(InputMode::plugin);
-        app.add_plugins(IsMap::plugin);
-        app.add_plugins(ItemProp::plugin);
-        app.add_plugins(Kind::plugin);
-        app.add_plugins(Label::plugin);
-        app.add_plugins(Loading::plugin);
-        app.add_plugins(List::plugin);
-        app.add_plugins(Loop::plugin);
-        app.add_plugins(Low::plugin);
-        app.add_plugins(Max::plugin);
-        app.add_plugins(MaxLength::plugin);
-        app.add_plugins(MinLength::plugin);
-        app.add_plugins(Media::plugin);
-        app.add_plugins(Method::plugin);
-        app.add_plugins(Min::plugin);
-        app.add_plugins(Multiple::plugin);
-        app.add_plugins(Muted::plugin);
-        app.add_plugins(Name::plugin);
-        app.add_plugins(NoValidate::plugin);
-        app.add_plugins(Open::plugin);
-        app.add_plugins(Optimum::plugin);
-        app.add_plugins(Pattern::plugin);
-        app.add_plugins(Ping::plugin);
-        app.add_plugins(Placeholder::plugin);
-        app.add_plugins(PlaysInline::plugin);
-        app.add_plugins(Poster::plugin);
-        app.add_plugins(Preload::plugin);
-        app.add_plugins(ReadOnly::plugin);
-        app.add_plugins(ReferrerPolicy::plugin);
-        app.add_plugins(Rel::plugin);
-        app.add_plugins(Required::plugin);
-        app.add_plugins(Reversed::plugin);
-        app.add_plugins(Role::plugin);
-        app.add_plugins(Rows::plugin);
-        app.add_plugins(RowSpan::plugin);
-        app.add_plugins(Sandbox::plugin);
-        app.add_plugins(Scope::plugin);
-        app.add_plugins(Selected::plugin);
-        app.add_plugins(Shape::plugin);
-        app.add_plugins(Size::plugin);
-        app.add_plugins(Sizes::plugin);
-        app.add_plugins(Slot::plugin);
-        app.add_plugins(Span::plugin);
-        app.add_plugins(Spellcheck::plugin);
-        app.add_plugins(Src::plugin);
-        app.add_plugins(SrcDoc::plugin);
-        app.add_plugins(SrcLang::plugin);
-        app.add_plugins(SrcSet::plugin);
-        app.add_plugins(Start::plugin);
-        app.add_plugins(Step::plugin);
-        app.add_plugins(Style::plugin);
-        app.add_plugins(Tabindex::plugin);
-        app.add_plugins(Target::plugin);
-        app.add_plugins(Title::plugin);
-        app.add_plugins(Translate::plugin);
-        app.add_plugins(Type::plugin);
-        app.add_plugins(UseMap::plugin);
-        app.add_plugins(Value::plugin);
-        app.add_plugins(Width::plugin);
-        app.add_plugins(Wrap::plugin);
+        app.add_systems(PostUpdate, update_attributes.in_set(DomSystems::Attach));
     }
 }
 
 macro_rules! attribute {
     ($ty:ident, $attr:literal) => {
         #[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub struct $ty(Cow<'static, str>);
+
+        impl Attribute for $ty {
+            fn set(&self, element: &Element) -> Result {
+                element.set_attribute($attr, &self.0).js_err()
+            }
+        }
 
         impl core::ops::Deref for $ty {
             type Target = str;
@@ -178,33 +76,87 @@ macro_rules! attribute {
                 self.0.to_mut()
             }
 
-            // TODO: these should really be trait-like
-            fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
-                for (href, element) in &attrs {
-                    let Some(element) = element else {
-                        return Err(format!("'{}' attribute requires an `Element`", $attr).into());
-                    };
-
-                    element.set_attribute($attr, &href.0).js_err()?;
-                }
-
-                Ok(())
-            }
-
-            fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
-                let Ok(element) = attr.get(trigger.entity) else {
-                    return Ok(());
-                };
-
-                element.remove_attribute($attr).js_err()
-            }
-
-            fn plugin(app: &mut App) {
-                app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
-                    .add_observer(Self::observe_remove);
+            fn replace(mut world: DeferredWorld, context: HookContext) {
+                world
+                    .commands()
+                    .entity(context.entity)
+                    .entry::<Attributes>()
+                    .or_default()
+                    .and_modify(move |mut attr| {
+                        attr.remove(context.component_id, Cow::from($attr));
+                    });
             }
         }
     };
+}
+
+trait Attribute {
+    fn set(&self, element: &Element) -> Result;
+}
+
+#[derive(Component, Default)]
+struct Attributes {
+    attributes: Vec<(ComponentId, AttributeThunk)>,
+    removed: HashMap<ComponentId, Cow<'static, str>>,
+}
+
+type AttributeThunk =
+    for<'a> fn(&'a EntityRefExcept<(Attributes, Element)>) -> Option<&'a dyn Attribute>;
+
+impl Attributes {
+    pub fn insert<T: Component + Attribute>(&mut self, id: ComponentId) {
+        self.insert_thunk(id, |entity: &EntityRefExcept<(Attributes, Element)>| {
+            entity.get::<T>().map(|t| t as &dyn Attribute)
+        });
+    }
+
+    fn insert_thunk(&mut self, id: ComponentId, thunk: AttributeThunk) {
+        self.attributes.push((id, thunk));
+        self.removed.remove(&id);
+    }
+
+    pub fn remove(&mut self, id: ComponentId, name: Cow<'static, str>) {
+        self.attributes.retain(|a| a.0 != id);
+        self.removed.insert(id, name);
+    }
+}
+
+fn insert_hook<T: Component + Attribute>(mut world: DeferredWorld, context: HookContext) {
+    world
+        .commands()
+        .entity(context.entity)
+        .entry::<Attributes>()
+        .or_default()
+        .and_modify(move |mut attr| {
+            attr.insert::<T>(context.component_id);
+        });
+}
+
+fn update_attributes(
+    mut attributes: Query<(
+        &mut Attributes,
+        &Element,
+        EntityRefExcept<(Attributes, Element)>,
+    )>,
+    ticks: SystemChangeTick,
+) -> Result {
+    for (mut attributes, element, entity) in &mut attributes {
+        for (_, attr) in attributes.removed.drain() {
+            element.remove_attribute(&attr).js_err()?;
+        }
+
+        for (id, thunk) in &attributes.attributes {
+            if entity
+                .get_change_ticks_by_id(*id)
+                .is_some_and(|t| t.is_changed(ticks.last_run(), ticks.this_run()))
+                && let Some(attr) = thunk(&entity)
+            {
+                attr.set(element)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 attribute! {Href, "href"}
@@ -232,11 +184,8 @@ attribute! {Cite, "cite"}
 attribute! {Content, "content"}
 attribute! {Coords, "coords"}
 attribute! {Csp, "csp"}
-attribute! {Data, "data"}
-// TODO: add bespoke data-*
 attribute! {Datetime, "datetime"}
 attribute! {Dirname, "dirname"}
-// TODO: add bespoke download
 attribute! {Enctype, "enctype"}
 attribute! {ElementTiming, "elementtiming"}
 attribute! {For, "for"}
@@ -276,33 +225,25 @@ attribute! {Value, "value"}
 macro_rules! boolean_attribute {
     ($ty:ident, $attr:literal) => {
         #[derive(Debug, Component, Clone, PartialEq, Eq)]
+        #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub struct $ty;
 
+        impl Attribute for $ty {
+            fn set(&self, element: &Element) -> Result {
+                element.set_attribute($attr, "").js_err()
+            }
+        }
+
         impl $ty {
-            // TODO: these should really be trait-like
-            fn attach(attrs: Query<Option<&Element>, (Changed<Self>, With<Self>)>) -> Result {
-                for element in &attrs {
-                    let Some(element) = element else {
-                        return Err(format!("'{}' attribute requires a DOM Element", $attr).into());
-                    };
-
-                    element.set_attribute($attr, "").js_err()?;
-                }
-
-                Ok(())
-            }
-
-            fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
-                let Ok(element) = attr.get(trigger.entity) else {
-                    return Ok(());
-                };
-
-                element.remove_attribute($attr).js_err()
-            }
-
-            fn plugin(app: &mut App) {
-                app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
-                    .add_observer(Self::observe_remove);
+            fn replace(mut world: DeferredWorld, context: HookContext) {
+                world
+                    .commands()
+                    .entity(context.entity)
+                    .entry::<Attributes>()
+                    .or_default()
+                    .and_modify(move |mut attr| {
+                        attr.remove(context.component_id, Cow::from($attr));
+                    });
             }
         }
     };
@@ -311,7 +252,6 @@ macro_rules! boolean_attribute {
 boolean_attribute! {Muted, "muted"}
 boolean_attribute! {Loop, "loop"}
 boolean_attribute! {Disabled, "disabled"}
-boolean_attribute! {Download, "download"}
 boolean_attribute! {Checked, "checked"}
 boolean_attribute! {Alpha, "alpha"}
 boolean_attribute! {Async, "async"}
@@ -334,8 +274,15 @@ boolean_attribute! {Selected, "selected"}
 macro_rules! enum_attribute {
     ($ty:ident, $attr:literal, $($var:ident, $value:literal),*) => {
         #[derive(Debug, Component, Clone, PartialEq, Eq)]
+        #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub enum $ty {
             $($var),*
+        }
+
+        impl Attribute for $ty {
+            fn set(&self, element: &Element) -> Result {
+                element.set_attribute($attr, self.as_attribute()).js_err()
+            }
         }
 
         impl $ty {
@@ -347,30 +294,15 @@ macro_rules! enum_attribute {
                 }
             }
 
-            // TODO: these should really be trait-like
-            fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
-                for (attr, element) in &attrs {
-                    let Some(element) = element else {
-                        return Err(format!("'{}' attribute requires a DOM Element", $attr).into());
-                    };
-
-                    element.set_attribute($attr, attr.as_attribute()).js_err()?;
-                }
-
-                Ok(())
-            }
-
-            fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
-                let Ok(element) = attr.get(trigger.entity) else {
-                    return Ok(());
-                };
-
-                element.remove_attribute($attr).js_err()
-            }
-
-            pub(crate) fn plugin(app: &mut App) {
-                app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
-                    .add_observer(Self::observe_remove);
+            fn replace(mut world: DeferredWorld, context: HookContext) {
+                world
+                    .commands()
+                    .entity(context.entity)
+                    .entry::<Attributes>()
+                    .or_default()
+                    .and_modify(move |mut attr| {
+                        attr.remove(context.component_id, Cow::from($attr));
+                    });
             }
         }
     };
@@ -529,34 +461,26 @@ enum_attribute!(Wrap, "wrap", Hard, "hard", Soft, "soft", Off, "off");
 macro_rules! value_attribute {
     ($ty:ident, $attr:literal, $inner:path) => {
         #[derive(Debug, Component, Clone, PartialEq, PartialOrd)]
+        #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub struct $ty(pub $inner);
 
+        impl Attribute for $ty {
+            fn set(&self, element: &Element) -> Result {
+                let value = self.0.to_string();
+                element.set_attribute($attr, &value).js_err()
+            }
+        }
+
         impl $ty {
-            // TODO: these should really be trait-like
-            fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
-                for (href, element) in &attrs {
-                    let Some(element) = element else {
-                        return Err(format!("'{}' attribute requires an `Element`", $attr).into());
-                    };
-
-                    let value = href.0.to_string();
-                    element.set_attribute($attr, &value).js_err()?;
-                }
-
-                Ok(())
-            }
-
-            fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
-                let Ok(element) = attr.get(trigger.entity) else {
-                    return Ok(());
-                };
-
-                element.remove_attribute($attr).js_err()
-            }
-
-            fn plugin(app: &mut App) {
-                app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
-                    .add_observer(Self::observe_remove);
+            fn replace(mut world: DeferredWorld, context: HookContext) {
+                world
+                    .commands()
+                    .entity(context.entity)
+                    .entry::<Attributes>()
+                    .or_default()
+                    .and_modify(move |mut attr| {
+                        attr.remove(context.component_id, Cow::from($attr));
+                    });
             }
         }
     };
@@ -575,3 +499,87 @@ value_attribute!(High, "high", f32);
 value_attribute!(Optimum, "optimum", f32);
 value_attribute!(MaxLength, "maxlength", u32);
 value_attribute!(MinLength, "maxlength", u32);
+
+#[derive(Debug, Component, Clone, PartialEq, PartialOrd)]
+pub enum Download {
+    Auto,
+    Filename(Cow<'static, str>),
+}
+
+impl Download {
+    // TODO: these should really be trait-like
+    fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
+        for (dl, element) in &attrs {
+            let Some(element) = element else {
+                return Err("'download' attribute requires an `Element`".into());
+            };
+
+            let value = match dl {
+                Download::Filename(name) => name.clone(),
+                Download::Auto => Cow::Borrowed(""),
+            };
+
+            element.set_attribute("download", &value).js_err()?;
+        }
+
+        Ok(())
+    }
+
+    fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
+        let Ok(element) = attr.get(trigger.entity) else {
+            return Ok(());
+        };
+
+        element.remove_attribute("download").js_err()
+    }
+
+    fn plugin(app: &mut App) {
+        app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
+            .add_observer(Self::observe_remove);
+    }
+}
+
+#[derive(Debug, Component, Clone, PartialEq, PartialOrd)]
+#[component(immutable)]
+pub struct Data {
+    name: Cow<'static, str>,
+    value: Cow<'static, str>,
+}
+
+impl Data {
+    pub fn new(kind: impl Into<Cow<'static, str>>, value: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            name: kind.into(),
+            value: value.into(),
+        }
+    }
+
+    fn attribute_string(&self) -> String {
+        format!("data-{}", self.name)
+    }
+
+    // TODO: these should really be trait-like
+    fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
+        for (data, element) in &attrs {
+            let Some(element) = element else {
+                return Err(format!("'data-{}' attribute requires an `Element`", data.name).into());
+            };
+
+            element
+                .set_attribute(&data.attribute_string(), &data.value)
+                .js_err()?;
+        }
+
+        Ok(())
+    }
+
+    fn remove(stop: Stop<(&Self, &Element)>) -> Result {
+        let (data, element) = stop.into_inner();
+        element.remove_attribute(&data.attribute_string()).js_err()
+    }
+
+    fn plugin(app: &mut App) {
+        app.add_systems(PostUpdate, (Self::attach.in_set(DomSystems::Attach),))
+            .add_stop_observer(Self::remove);
+    }
+}

@@ -59,7 +59,7 @@ fn initialize_router(window: Single<(Entity, &Window)>, mut commands: Commands) 
 
     commands.spawn((
         EventOf(window_entity),
-        OnPopState::new(
+        ev::pop_state(
             |_: Ev<web_sys::PopStateEvent>,
              window: Single<&Window>,
              mut pathname: ResMut<Pathname>| {
@@ -130,7 +130,7 @@ fn hook_into_anchors(
         commands.spawn((
             RouterLink,
             EventOf(entity),
-            OnClick::new(
+            ev::click(
                 move |ev: Ev<web_sys::PointerEvent>,
                       window: Single<&Window>,
                       mut pathname: ResMut<Pathname>| {

@@ -54,7 +54,7 @@ impl InnerHtml {
                 return Err("`InnerHTML` property requires an Element".into());
             };
 
-            element.set_inner_html(&html);
+            element.set_inner_html(html);
         }
 
         Ok(())

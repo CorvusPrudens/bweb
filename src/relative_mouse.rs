@@ -43,8 +43,8 @@ impl RelativeMouse {
             Ok(())
         };
 
-        let on_move = OnPointerMove::new(event.clone()).capturing().suppress();
-        let on_down = OnPointerDown::new(event.clone()).capturing().suppress();
+        let on_move = ev::pointer_move(event).capturing().suppress();
+        let on_down = ev::pointer_down(event).capturing().suppress();
 
         let on_move = commands.spawn((EventOf(*window), on_move)).id();
         let on_down = commands.spawn((EventOf(*window), on_down)).id();
