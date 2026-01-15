@@ -19,7 +19,7 @@ bevy_utils = { version = "0.17.1", default-features = false, features = [
   "std",
 ] }
 bevy_platform = { version = "0.17.1", default-features = false, features = ["alloc"] }
-bevy_query_observer = { path = "../becs-bweb/crates/bevy_query_observer" }
+bevy_query_observer = { path = "../crates/bevy_query_observer" }
 log = { version = "0.4", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = [
   "alloc",
