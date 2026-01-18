@@ -70,7 +70,7 @@ impl Class {
     }
 
     fn observe_remove(
-        trigger: On<Remove, Self>,
+        trigger: On<Replace, Self>,
         class: Query<(&Self, &ClassOf)>,
         element: Query<&Element>,
     ) -> Result {
