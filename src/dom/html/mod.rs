@@ -3,7 +3,6 @@ use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
 use bevy_query_observer::{AddStopObserver, Stop};
-use send_wrapper::SendWrapper;
 use std::borrow::Cow;
 use wasm_bindgen::JsCast;
 
@@ -31,7 +30,9 @@ impl Plugin for HtmlPlugin {
             PostUpdate,
             (
                 update_text,
-                (inject_element, inject_input_element, inject_text),
+                inject_element,
+                inject_input_element,
+                inject_text,
             )
                 .chain()
                 .in_set(DomSystems::Insert),
@@ -40,14 +41,18 @@ impl Plugin for HtmlPlugin {
     }
 }
 
+#[doc(hidden)]
+pub use send_wrapper::SendWrapper;
+
+#[macro_export]
 macro_rules! web_wrapper {
     ($ty:ident) => {
         #[derive(Debug, Component, Clone)]
-        pub struct $ty(SendWrapper<web_sys::$ty>);
+        pub struct $ty($crate::dom::html::SendWrapper<web_sys::$ty>);
 
         impl $ty {
             pub fn new(value: web_sys::$ty) -> Self {
-                Self(SendWrapper::new(value))
+                Self($crate::dom::html::SendWrapper::new(value))
             }
         }
 
@@ -69,6 +74,7 @@ macro_rules! web_wrapper {
 
 web_wrapper!(Window);
 web_wrapper!(Document);
+web_wrapper!(HtmlDocument);
 web_wrapper!(Navigator);
 
 fn initialize_window(mut commands: Commands) -> Result {
@@ -85,10 +91,12 @@ fn initialize_window(mut commands: Commands) -> Result {
         .document()
         .ok_or("browser document should be available")?;
     let document_node: &web_sys::Node = &document;
+    let document_html = document.dyn_ref::<web_sys::HtmlDocument>().unwrap();
 
     commands.spawn((
         Node(SendWrapper::new(document_node.clone())),
         Document(SendWrapper::new(document.clone())),
+        HtmlDocument(SendWrapper::new(document_html.clone())),
     ));
 
     let html = document

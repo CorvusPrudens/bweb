@@ -273,6 +273,7 @@ where
                 .js_err()?;
             }
             None => {
+                let event_name = handler.event;
                 let id = handler.handler;
                 let trigger = handler.trigger;
                 let name = handler.name.clone();
@@ -281,8 +282,15 @@ where
                         let world = app.world_mut();
 
                         if trigger {
-                            // prefer synchronous execution
-                            world.resource_mut::<ScheduleTrigger>().trigger();
+                            match event_name {
+                                "pointerdown" | "mousedown" | "keydown" => {
+                                    // prefer synchronous execution for paired events
+                                    world.resource_mut::<ScheduleTrigger>().trigger();
+                                }
+                                _ => {
+                                    world.resource_mut::<ScheduleTrigger>().trigger_async();
+                                }
+                            }
                         }
 
                         let result = world.run_system_with(

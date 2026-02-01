@@ -32,7 +32,7 @@ wasm-bindgen-futures = "0.4.50"
 js-sys = "0.3.78"
 
 [dependencies.web-sys]
-version = "0.3.77"
+version = "0.3.85"
 features = [
   "Window",
   "Element",
@@ -43,6 +43,7 @@ features = [
   "HtmlHeadElement",
   "CssStyleDeclaration",
   "Document",
+  "HtmlDocument",
   "Text",
   "Event",
   "FocusEvent",
