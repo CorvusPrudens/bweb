@@ -393,21 +393,20 @@ fn resolve_routes(
                 continue;
             };
 
-            match child_route {
-                Some(route) => {
-                    let mut routes = route.routes.iter().collect::<Vec<_>>();
-                    routes.sort_unstable_by(|a, b| a.0.cmp_specificity(&b.0).reverse());
+            if let Some(route) = child_route {
+                let mut routes = route.routes.iter().collect::<Vec<_>>();
+                routes.sort_unstable_by(|a, b| a.0.cmp_specificity(&b.0).reverse());
 
-                    let mut best = routes.into_iter().filter_map(|(route, el)| {
-                        let parse_result = route.parse_path(*path).ok()?;
-                        Some((el, parse_result))
-                    });
+                let mut best = routes.into_iter().filter_map(|(route, el)| {
+                    let parse_result = route.parse_path(path).ok()?;
+                    Some((el, parse_result))
+                });
 
-                    match best.next() {
+                match best.next() {
                         Some((element, parse_result))
                             // TODO: this isn't quite right
                             if matched_route
-                                .is_none_or(|matched| &matched.0 != parse_result.matched) =>
+                                .is_none_or(|matched| matched.0 != parse_result.matched) =>
                         {
                             let inserter = element.clone();
 
@@ -449,9 +448,7 @@ fn resolve_routes(
                         }
                         _ => {}
                     }
-                }
-                None => {}
-            };
+            }
 
             find_routes(nodes, child_entity, path, route_params, commands)?;
         }
