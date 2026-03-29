@@ -253,10 +253,9 @@ pub struct PathSegmentError;
 
 impl PathSegment {
     fn from_static(segment: &'static str) -> Self {
-        if segment.starts_with(':') {
-            Self::Param(Cow::Borrowed(&segment[1..]))
-        } else {
-            Self::Static(Cow::Borrowed(segment))
+        match segment.strip_prefix(':') {
+            Some(param) => Self::Param(Cow::Borrowed(param)),
+            None => Self::Static(Cow::Borrowed(segment)),
         }
     }
 }
@@ -380,10 +379,10 @@ fn resolve_routes(
     mut route_params: ResMut<RouteParams>,
     mut commands: Commands,
 ) -> Result {
-    fn find_routes<'a>(
+    fn find_routes(
         nodes: &Query<(Option<&Route>, Option<&MatchedRoute>, Option<&Children>)>,
         parent_entity: Entity,
-        path: &mut &'a str,
+        path: &mut &str,
         route_params: &mut RouteParams,
         commands: &mut Commands,
     ) -> Result {
@@ -514,13 +513,11 @@ impl<'a> Iterator for TrackedSplit<'a> {
         for (i, char) in self.string[self.start..].char_indices() {
             let i = i + self.start;
 
-            if char == '/' {
-                if self.start < i {
-                    let segment = &self.string[self.start + 1..i];
-                    self.start = i;
+            if char == '/' && self.start < i {
+                let segment = &self.string[self.start + 1..i];
+                self.start = i;
 
-                    return Some(segment);
-                }
+                return Some(segment);
             }
         }
 
@@ -562,9 +559,9 @@ mod test {
         let pattern = "/static/:param";
         let result = RouterPath::from_static(pattern).unwrap();
 
-        let mut input = "/static/coolio/last";
+        let input = "/static/coolio/last";
 
-        let params = result.parse_path(&mut input).unwrap();
+        let params = result.parse_path(input).unwrap();
 
         assert_eq!(
             params,
@@ -581,9 +578,9 @@ mod test {
         let pattern = "/static/:param";
         let result = RouterPath::from_static(pattern).unwrap();
 
-        let mut input = "/static";
+        let input = "/static";
 
-        let result = result.parse_path(&mut input);
+        let result = result.parse_path(input);
 
         assert!(result.is_err());
     }

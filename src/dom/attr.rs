@@ -498,7 +498,7 @@ value_attribute!(Low, "low", f32);
 value_attribute!(High, "high", f32);
 value_attribute!(Optimum, "optimum", f32);
 value_attribute!(MaxLength, "maxlength", u32);
-value_attribute!(MinLength, "maxlength", u32);
+value_attribute!(MinLength, "minlength", u32);
 
 #[derive(Debug, Component, Clone, PartialEq, PartialOrd)]
 pub enum Download {

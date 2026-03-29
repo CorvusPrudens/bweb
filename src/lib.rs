@@ -6,6 +6,7 @@ pub mod dom;
 pub mod js_err;
 pub mod relative_mouse;
 pub mod task;
+pub mod time;
 mod web_runner;
 
 pub use web_runner::ScheduleTrigger;

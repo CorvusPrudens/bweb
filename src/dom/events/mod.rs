@@ -194,6 +194,7 @@ macro_rules! handler {
 
 pub mod ev {
     handler! { click, "click", web_sys::PointerEvent }
+    handler! { submit, "submit", web_sys::SubmitEvent }
     handler! { pointer_down, "pointerdown", web_sys::PointerEvent }
     handler! { pointer_move, "pointermove", web_sys::PointerEvent }
     handler! { pointer_up, "pointerup", web_sys::PointerEvent }
