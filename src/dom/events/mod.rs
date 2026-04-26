@@ -1,5 +1,5 @@
 use super::{DomSystems, html::EventTarget};
-use crate::{ScheduleTrigger, js_err::JsErr};
+use crate::{js_err::JsErr, web_runner::ScheduleTrigger};
 use bevy_app::prelude::*;
 use bevy_ecs::{
     error::ErrorContext,
@@ -35,6 +35,17 @@ pub struct Bevent {
     event: &'static str,
     trigger: bool,
     capturing: bool,
+}
+
+#[cfg(feature = "debug")]
+impl std::fmt::Debug for Bevent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bevent")
+            .field("event", &self.event)
+            .field("trigger", &self.trigger)
+            .field("capturing", &self.capturing)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Bevent {
@@ -130,11 +141,13 @@ impl Bevent {
     }
 }
 
-#[derive(Debug, Component)]
+#[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[relationship(relationship_target = Events)]
 pub struct EventOf(pub Entity);
 
-#[derive(Debug, Component)]
+#[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[relationship_target(relationship = EventOf, linked_spawn)]
 pub struct Events(Vec<Entity>);
 
@@ -154,6 +167,16 @@ pub type Ev<E> = In<JsEvent<E>>;
 pub struct JsEvent<E> {
     entity: Entity,
     event: SendWrapper<E>,
+}
+
+#[cfg(feature = "debug")]
+impl<E: std::fmt::Debug> std::fmt::Debug for JsEvent<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JsEvent")
+            .field("entity", &self.entity)
+            .field("event", &*self.event)
+            .finish()
+    }
 }
 
 impl<E> JsEvent<E> {
@@ -210,7 +233,8 @@ pub mod ev {
     handler! { wheel, "wheel", web_sys::WheelEvent }
 }
 
-#[derive(Debug, Component)]
+#[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[component(on_replace = Self::on_replace_hook)]
 pub struct EventHandler<E: FromWasmAbi + 'static> {
     handler: Handler<E>,

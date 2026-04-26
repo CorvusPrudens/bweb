@@ -15,6 +15,7 @@ use crate::web_runner::ScheduleTrigger;
 ///
 /// While this struct is just a ZST, it prevents
 /// misuse of the underlying world.
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct TaskWorld(());
 
 impl TaskWorld {
@@ -69,7 +70,9 @@ pub trait AsyncTask<M>: 'static {
     async fn run(self, world: TaskWorld) -> Result;
 }
 
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct InfallibleTask;
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct FallibleTask;
 
 impl<F> AsyncTask<InfallibleTask> for F
@@ -125,7 +128,8 @@ where
 }
 
 /// A task that cancels when dropped.
-#[derive(Component, Debug)]
+#[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct TaskComponent(Option<futures::channel::oneshot::Sender<()>>);
 
 impl TaskComponent {

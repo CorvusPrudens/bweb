@@ -24,7 +24,8 @@ impl Plugin for AttributePlugin {
 
 macro_rules! attribute {
     ($ty:ident, $attr:literal) => {
-        #[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "debug", derive(Debug))]
         #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub struct $ty(Cow<'static, str>);
 
@@ -224,7 +225,8 @@ attribute! {Value, "value"}
 
 macro_rules! boolean_attribute {
     ($ty:ident, $attr:literal) => {
-        #[derive(Debug, Component, Clone, PartialEq, Eq)]
+        #[derive(Component, Clone, PartialEq, Eq)]
+        #[cfg_attr(feature = "debug", derive(Debug))]
         #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub struct $ty;
 
@@ -273,7 +275,8 @@ boolean_attribute! {Selected, "selected"}
 
 macro_rules! enum_attribute {
     ($ty:ident, $attr:literal, $($var:ident, $value:literal),*) => {
-        #[derive(Debug, Component, Clone, PartialEq, Eq)]
+        #[derive(Component, Clone, PartialEq, Eq)]
+        #[cfg_attr(feature = "debug", derive(Debug))]
         #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub enum $ty {
             $($var),*
@@ -460,7 +463,8 @@ enum_attribute!(Wrap, "wrap", Hard, "hard", Soft, "soft", Off, "off");
 
 macro_rules! value_attribute {
     ($ty:ident, $attr:literal, $inner:path) => {
-        #[derive(Debug, Component, Clone, PartialEq, PartialOrd)]
+        #[derive(Component, Clone, PartialEq, PartialOrd)]
+        #[cfg_attr(feature = "debug", derive(Debug))]
         #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub struct $ty(pub $inner);
 
@@ -500,7 +504,8 @@ value_attribute!(Optimum, "optimum", f32);
 value_attribute!(MaxLength, "maxlength", u32);
 value_attribute!(MinLength, "minlength", u32);
 
-#[derive(Debug, Component, Clone, PartialEq, PartialOrd)]
+#[derive(Component, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub enum Download {
     Auto,
     Filename(Cow<'static, str>),
@@ -539,7 +544,8 @@ impl Download {
     }
 }
 
-#[derive(Debug, Component, Clone, PartialEq, PartialOrd)]
+#[derive(Component, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[component(immutable)]
 pub struct Data {
     name: Cow<'static, str>,

@@ -2,7 +2,9 @@ use bevy_ecs::prelude::*;
 
 use super::Ev;
 
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Concise;
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Fallible;
 
 pub trait IntoHandlerSystem<E, M> {

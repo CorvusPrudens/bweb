@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = ["router"]
 router = ["web-sys/History", "web-sys/Url"]
+debug = []
 
 [dependencies]
 bevy_app = { version = "0.18", default-features = false, features = [

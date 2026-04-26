@@ -3,7 +3,8 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use std::borrow::Cow;
 
-#[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct InnerHtml(Cow<'static, str>);
 
 impl core::ops::Deref for InnerHtml {

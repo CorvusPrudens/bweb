@@ -7,6 +7,8 @@ pub mod class;
 pub mod events;
 pub mod html;
 
+#[derive(Default)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct DomPlugin;
 
 impl Plugin for DomPlugin {

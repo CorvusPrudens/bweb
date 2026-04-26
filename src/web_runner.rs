@@ -6,12 +6,23 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
+#[derive(Default)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct WebRunnerPlugin;
 
 #[derive(Resource)]
 pub struct ScheduleTrigger {
     task_pool: Notifier,
     microtask_trigger: bool,
+}
+
+#[cfg(feature = "debug")]
+impl std::fmt::Debug for ScheduleTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScheduleTrigger")
+            .field("microtask_trigger", &self.microtask_trigger)
+            .finish_non_exhaustive()
+    }
 }
 
 struct Inner {
@@ -76,7 +87,7 @@ thread_local! {
     static APP: RefCell<App> = panic!("world not initialized");
 }
 
-pub fn app_scope<F, R>(func: F) -> Result<R, BorrowMutError>
+pub(crate) fn app_scope<F, R>(func: F) -> Result<R, BorrowMutError>
 where
     F: FnOnce(&mut App) -> R,
 {

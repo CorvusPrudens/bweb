@@ -18,7 +18,8 @@ impl Plugin for SvgPlugin {
 }
 
 /// An SVG element inserter.
-#[derive(Debug, Component)]
+#[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct SvgElementName(pub &'static str);
 
 fn inject_svg_element(
@@ -43,10 +44,12 @@ fn inject_svg_element(
     Ok(())
 }
 
-#[derive(Debug, Default, Component, PartialEq, Eq, Clone)]
+#[derive(Default, Component, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[require(SvgElementName("svg"), Xmlns::new("http://www.w3.org/2000/svg"))]
 pub struct Svg;
 
-#[derive(Debug, Default, Component, PartialEq, Eq, Clone)]
+#[derive(Default, Component, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[require(SvgElementName("path"))]
 pub struct Path;

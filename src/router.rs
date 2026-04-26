@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use wasm_bindgen::JsValue;
 
 // TODO: okay this should probably be a lil entity set guy
-pub(super) struct RouterPlugin;
+#[derive(Default)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+pub struct RouterPlugin;
 
 impl Plugin for RouterPlugin {
     fn build(&self, app: &mut App) {
@@ -31,7 +33,7 @@ impl Plugin for RouterPlugin {
         )
         .init_resource::<RouteParams>();
 
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, feature = "debug"))]
         app.add_systems(
             PostUpdate,
             (|pathname: Res<Pathname>| {
@@ -42,7 +44,8 @@ impl Plugin for RouterPlugin {
     }
 }
 
-#[derive(Debug, Resource)]
+#[derive(Resource)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Pathname {
     previous_path: Option<String>,
     pathname: String,
@@ -165,6 +168,15 @@ pub struct Navigator<'w, 's> {
     pathname: ResMut<'w, Pathname>,
 }
 
+#[cfg(feature = "debug")]
+impl std::fmt::Debug for Navigator<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Navigator")
+            .field("pathname", &*self.pathname)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'w, 's> Navigator<'w, 's> {
     pub fn navigate(&mut self, href: &str) -> Result<()> {
         let location = self.window.location();
@@ -199,6 +211,18 @@ pub struct Route {
     routes: Vec<(RouterPath, RouteElement)>,
 }
 
+#[cfg(feature = "debug")]
+impl std::fmt::Debug for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Route")
+            .field(
+                "routes",
+                &self.routes.iter().map(|(p, _)| p).collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl Route {
     pub const fn new() -> Self {
         Self { routes: Vec::new() }
@@ -228,7 +252,8 @@ impl Route {
     }
 }
 
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct RouteParams(HashMap<String, String>);
 
 impl RouteParams {
@@ -241,7 +266,8 @@ impl RouteParams {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "debug"), derive(Debug))]
 pub enum PathSegment {
     Root,
     Static(Cow<'static, str>),
@@ -260,7 +286,8 @@ impl PathSegment {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "debug"), derive(Debug))]
 pub struct RouterPath(Vec<PathSegment>);
 
 impl RouterPath {
@@ -362,7 +389,8 @@ impl RouterPath {
     // }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
+#[cfg_attr(any(test, feature = "debug"), derive(Debug))]
 struct RouteParseResult<'a> {
     matched: &'a str,
     remainder: &'a str,
@@ -370,6 +398,7 @@ struct RouteParseResult<'a> {
 }
 
 #[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct MatchedRoute(String);
 
 fn resolve_routes(

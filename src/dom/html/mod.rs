@@ -47,7 +47,8 @@ pub use send_wrapper::SendWrapper;
 #[macro_export]
 macro_rules! web_wrapper {
     ($ty:ident) => {
-        #[derive(Debug, Component, Clone)]
+        #[derive(Component, Clone)]
+        #[cfg_attr(feature = "debug", derive(Debug))]
         pub struct $ty($crate::dom::html::SendWrapper<web_sys::$ty>);
 
         impl $ty {
@@ -140,7 +141,8 @@ web_wrapper!(Element);
 web_wrapper!(EventTarget);
 web_wrapper!(SvgElement);
 
-#[derive(Debug, Component)]
+#[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[component(on_replace = Self::on_remove_hook, on_insert = Self::on_insert_hook)]
 pub struct Node(SendWrapper<web_sys::Node>);
 
@@ -179,7 +181,8 @@ impl Node {
 }
 
 /// An HTML element inserter.
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[derive(Component, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[component(on_replace = Self::on_replace_hook)]
 pub struct HtmlElementName(pub &'static str);
 
@@ -231,7 +234,8 @@ fn inject_input_element(
     Ok(())
 }
 
-#[derive(Debug, Component, Clone, PartialEq, Eq)]
+#[derive(Component, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Text(Cow<'static, str>);
 
 impl core::ops::Deref for Text {

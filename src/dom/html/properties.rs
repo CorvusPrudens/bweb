@@ -15,6 +15,7 @@ impl Plugin for PropertyPlugin {
 }
 
 #[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct ValueProp(pub Cow<'static, str>);
 
 impl ValueProp {

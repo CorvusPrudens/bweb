@@ -13,11 +13,13 @@ impl Plugin for ClassPlugin {
     }
 }
 
-#[derive(Debug, Component)]
+#[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[relationship(relationship_target = Classes)]
 pub struct ClassOf(pub Entity);
 
-#[derive(Debug, Component)]
+#[derive(Component)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 #[relationship_target(relationship = ClassOf, linked_spawn)]
 pub struct Classes(Vec<Entity>);
 
@@ -46,7 +48,8 @@ macro_rules! classes {
     };
 }
 
-#[derive(Debug, Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Class(Cow<'static, str>);
 
 impl Class {

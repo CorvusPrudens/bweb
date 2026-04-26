@@ -2,7 +2,9 @@ use crate::dom::prelude::*;
 use bevy_app::Plugin;
 use bevy_ecs::prelude::*;
 
-pub(crate) struct RelativeMousePlugin;
+#[derive(Default)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+pub struct RelativeMousePlugin;
 
 impl Plugin for RelativeMousePlugin {
     fn build(&self, app: &mut bevy_app::App) {
@@ -15,7 +17,8 @@ impl Plugin for RelativeMousePlugin {
 ///
 /// This component is updated without triggering an ECS update, so should
 /// not be solely relied upon for mouse position updates.
-#[derive(Debug, Component, Default)]
+#[derive(Component, Default)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct RelativeMouse {
     pub x: f64,
     pub y: f64,

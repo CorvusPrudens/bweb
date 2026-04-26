@@ -1,29 +1,41 @@
-#![allow(clippy::type_complexity)]
+//! Interact with the DOM in the vocabulary of ECS.
+//!
+//! `bweb` provides components, events, and a runner that
+//! translate browser APIs into idiomatic ECS APIs.
 
-use bevy_app::prelude::*;
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![allow(clippy::type_complexity)]
+#![warn(missing_debug_implementations)]
+#![warn(missing_docs)]
 
 pub mod dom;
 pub mod js_err;
 pub mod relative_mouse;
 pub mod task;
 pub mod time;
-mod web_runner;
-
-pub use web_runner::ScheduleTrigger;
+pub mod web_runner;
 
 #[cfg(feature = "router")]
 pub mod router;
 
-pub struct BwebPlugin;
+pub mod prelude {
+    pub use crate::dom::prelude::*;
+    pub use crate::js_err::JsErr;
+    pub use crate::task::{TaskComponent, TaskWorld, spawn_local};
+    pub use crate::time::sleep;
 
-impl Plugin for BwebPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_plugins((
-            web_runner::WebRunnerPlugin,
-            dom::DomPlugin,
-            relative_mouse::RelativeMousePlugin,
-            #[cfg(feature = "router")]
-            router::RouterPlugin,
-        ));
+    #[cfg(feature = "router")]
+    pub use crate::router::Route;
+}
+
+bevy_app::plugin_group! {
+    /// `bweb`'s top-level plugin.
+    #[cfg_attr(feature = "debug", derive(Debug))]
+    pub struct BwebPlugins {
+        web_runner:::WebRunnerPlugin,
+        dom:::DomPlugin,
+        relative_mouse:::RelativeMousePlugin,
+        #[cfg(feature = "router")]
+        router:::RouterPlugin,
     }
 }
