@@ -15,11 +15,15 @@ impl Plugin for ClassPlugin {
 
 #[derive(Component)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 #[relationship(relationship_target = Classes)]
 pub struct ClassOf(pub Entity);
 
 #[derive(Component)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 #[relationship_target(relationship = ClassOf, linked_spawn)]
 pub struct Classes(Vec<Entity>);
 
@@ -50,6 +54,8 @@ macro_rules! classes {
 
 #[derive(Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 pub struct Class(Cow<'static, str>);
 
 impl Class {

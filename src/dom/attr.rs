@@ -26,6 +26,8 @@ macro_rules! attribute {
     ($ty:ident, $attr:literal) => {
         #[derive(Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[cfg_attr(feature = "debug", derive(Debug))]
+        #[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+        #[cfg_attr(feature = "reflect", reflect(Component))]
         #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub struct $ty(Cow<'static, str>);
 
@@ -277,6 +279,8 @@ macro_rules! enum_attribute {
     ($ty:ident, $attr:literal, $($var:ident, $value:literal),*) => {
         #[derive(Component, Clone, PartialEq, Eq)]
         #[cfg_attr(feature = "debug", derive(Debug))]
+        #[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+        #[cfg_attr(feature = "reflect", reflect(Component))]
         #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub enum $ty {
             $($var),*
@@ -465,6 +469,8 @@ macro_rules! value_attribute {
     ($ty:ident, $attr:literal, $inner:path) => {
         #[derive(Component, Clone, PartialEq, PartialOrd)]
         #[cfg_attr(feature = "debug", derive(Debug))]
+        #[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+        #[cfg_attr(feature = "reflect", reflect(Component))]
         #[component(on_insert = insert_hook::<Self>, on_replace = Self::replace)]
         pub struct $ty(pub $inner);
 
@@ -506,6 +512,8 @@ value_attribute!(MinLength, "minlength", u32);
 
 #[derive(Component, Clone, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 pub enum Download {
     Auto,
     Filename(Cow<'static, str>),
@@ -546,6 +554,8 @@ impl Download {
 
 #[derive(Component, Clone, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 #[component(immutable)]
 pub struct Data {
     name: Cow<'static, str>,

@@ -5,7 +5,6 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use bevy_platform::collections::HashMap;
-use log::info;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
@@ -37,7 +36,7 @@ impl Plugin for RouterPlugin {
         app.add_systems(
             PostUpdate,
             (|pathname: Res<Pathname>| {
-                info!("navigation: {pathname:?}");
+                log::info!("navigation: {pathname:?}");
             })
             .run_if(resource_changed::<Pathname>),
         );
@@ -46,6 +45,8 @@ impl Plugin for RouterPlugin {
 
 #[derive(Resource)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Resource))]
 pub struct Pathname {
     previous_path: Option<String>,
     pathname: String,
@@ -254,6 +255,8 @@ impl Route {
 
 #[derive(Resource, Default)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Resource))]
 pub struct RouteParams(HashMap<String, String>);
 
 impl RouteParams {
@@ -268,6 +271,7 @@ impl RouteParams {
 
 #[derive(PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "debug"), derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
 pub enum PathSegment {
     Root,
     Static(Cow<'static, str>),
@@ -288,6 +292,7 @@ impl PathSegment {
 
 #[derive(PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "debug"), derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
 pub struct RouterPath(Vec<PathSegment>);
 
 impl RouterPath {
@@ -399,6 +404,8 @@ struct RouteParseResult<'a> {
 
 #[derive(Component)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 pub struct MatchedRoute(String);
 
 fn resolve_routes(

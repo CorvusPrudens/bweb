@@ -5,6 +5,8 @@ use std::borrow::Cow;
 
 #[derive(Component, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 pub struct InnerHtml(Cow<'static, str>);
 
 impl core::ops::Deref for InnerHtml {

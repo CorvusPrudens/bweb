@@ -16,6 +16,8 @@ impl Plugin for PropertyPlugin {
 
 #[derive(Component)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 pub struct ValueProp(pub Cow<'static, str>);
 
 impl ValueProp {

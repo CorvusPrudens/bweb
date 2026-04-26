@@ -19,6 +19,8 @@ impl Plugin for RelativeMousePlugin {
 /// not be solely relied upon for mouse position updates.
 #[derive(Component, Default)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 pub struct RelativeMouse {
     pub x: f64,
     pub y: f64,

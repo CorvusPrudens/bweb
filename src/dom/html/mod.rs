@@ -183,6 +183,8 @@ impl Node {
 /// An HTML element inserter.
 #[derive(Component, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 #[component(on_replace = Self::on_replace_hook)]
 pub struct HtmlElementName(pub &'static str);
 
@@ -236,6 +238,8 @@ fn inject_input_element(
 
 #[derive(Component, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 pub struct Text(Cow<'static, str>);
 
 impl core::ops::Deref for Text {

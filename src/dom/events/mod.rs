@@ -143,11 +143,15 @@ impl Bevent {
 
 #[derive(Component)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 #[relationship(relationship_target = Events)]
 pub struct EventOf(pub Entity);
 
 #[derive(Component)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 #[relationship_target(relationship = EventOf, linked_spawn)]
 pub struct Events(Vec<Entity>);
 

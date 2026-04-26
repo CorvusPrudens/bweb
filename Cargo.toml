@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = ["router"]
 router = ["web-sys/History", "web-sys/Url"]
+reflect = ["dep:bevy_reflect", "bevy_ecs/bevy_reflect"]
 debug = []
 
 [dependencies]
@@ -19,7 +20,8 @@ bevy_ecs = { version = "0.18", default-features = false, features = [
 bevy_platform = { version = "0.18", default-features = false, features = [
   "alloc"
 ] }
-bevy_query_observer = { path = "../bevy_query_observer" }
+bevy_reflect = { version = "0.18", default-features = false, optional = true }
+bevy_query_observer = { version = "0.3.0", path = "../bevy_query_observer" }
 bevy_utils = { version = "0.18", default-features = false, features = [
   "std",
 ] }

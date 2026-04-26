@@ -20,6 +20,8 @@ impl Plugin for SvgPlugin {
 /// An SVG element inserter.
 #[derive(Component)]
 #[cfg_attr(feature = "debug", derive(Debug))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "reflect", reflect(Component))]
 pub struct SvgElementName(pub &'static str);
 
 fn inject_svg_element(
