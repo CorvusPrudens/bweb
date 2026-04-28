@@ -2,12 +2,18 @@ use bevy_ecs::prelude::*;
 
 use super::Ev;
 
+/// A marker type for concise handlers.
 #[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Concise;
+
+/// A marker type for fallible handlers.
 #[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Fallible;
 
+/// Conversion trait to turn a function or closure into an
+/// event-handling system.
 pub trait IntoHandlerSystem<E, M> {
+    /// Convert `Self` into an event-handling system.
     fn into_handler(self) -> impl System<In = Ev<E>, Out = Result>;
 }
 

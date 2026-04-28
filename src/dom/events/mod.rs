@@ -28,6 +28,11 @@ impl Plugin for EventsPlugin {
     }
 }
 
+/// A type-erased event-handling system.
+///
+/// When related to an element (e.g. `Div`) entity via
+/// `EventOf`, the inner event handler system will be attached
+/// and executed when the browser dispatches the corresponding event.
 #[derive(Component)]
 pub struct Bevent {
     handler:

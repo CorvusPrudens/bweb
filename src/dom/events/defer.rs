@@ -1,5 +1,7 @@
 use crate::js_err::JsErr;
 
+/// Provides deferred events, which may be required for DOM events that
+/// are immediately triggered.
 pub trait DeferredEvents {
     fn focus_deferred(&self);
     fn blur_deferred(&self);

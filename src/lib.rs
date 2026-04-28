@@ -5,8 +5,6 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::type_complexity)]
-#![warn(missing_debug_implementations)]
-#![warn(missing_docs)]
 
 pub mod dom;
 pub mod js_err;
@@ -26,6 +24,8 @@ pub mod prelude {
 
     #[cfg(feature = "router")]
     pub use crate::router::Route;
+
+    pub use crate::BwebPlugins;
 }
 
 bevy_app::plugin_group! {
