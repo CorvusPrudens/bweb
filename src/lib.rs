@@ -9,9 +9,9 @@
 pub mod dom;
 pub mod js_err;
 pub mod relative_mouse;
+pub mod runner;
 pub mod task;
 pub mod time;
-pub mod web_runner;
 
 #[cfg(feature = "router")]
 pub mod router;
@@ -32,7 +32,7 @@ bevy_app::plugin_group! {
     /// `bweb`'s top-level plugin.
     #[cfg_attr(feature = "debug", derive(Debug))]
     pub struct BwebPlugins {
-        web_runner:::WebRunnerPlugin,
+        runner:::WebRunnerPlugin,
         dom:::DomPlugin,
         relative_mouse:::RelativeMousePlugin,
         #[cfg(feature = "router")]

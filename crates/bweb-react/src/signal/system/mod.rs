@@ -77,7 +77,7 @@ impl SignalState {
         evals: Res<SignalEvaluations>,
     ) {
         let mut evals = evals.0.lock().unwrap();
-        for (entity, set, state) in &signals {
+        for (entity, set, state) in signals {
             if set.has_changed(world, tick.last_run(), tick.this_run()) {
                 evals.push(Evaluation {
                     entity,

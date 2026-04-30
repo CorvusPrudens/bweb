@@ -1,7 +1,7 @@
-use bell_react::prelude::*;
-use bell_react::signal::signal_world::SWorld;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
+use bweb_react::prelude::*;
+use bweb_react::signal::signal_world::SWorld;
 use criterion::{
     AxisScale, BenchmarkId, Criterion, PlotConfiguration, criterion_group, criterion_main,
 };
@@ -14,7 +14,7 @@ fn observer_benches(c: &mut Criterion) {
     let mut group = c.benchmark_group("run with update");
     for i in (0..5).map(|i| 10usize.pow(i)) {
         // group.bench_with_input(BenchmarkId::new("old", i), &i, |b, i| {
-        //     use bell_react::*;
+        //     use bweb_react::*;
 
         //     let mut app = App::new();
         //     app.add_plugins(ReactPlugin);
@@ -70,7 +70,7 @@ fn observer_benches(c: &mut Criterion) {
     let mut group = c.benchmark_group("run without update");
     for i in (0..5).map(|i| 10usize.pow(i)) {
         //     group.bench_with_input(BenchmarkId::new("old", i), &i, |b, i| {
-        //         use bell_react::*;
+        //         use bweb_react::*;
 
         //         let mut app = App::new();
         //         app.add_plugins(ReactPlugin);
@@ -129,7 +129,7 @@ fn observer_benches(c: &mut Criterion) {
     let mut group = c.benchmark_group("multiple sources");
     for i in (0..5).map(|i| 10usize.pow(i)) {
         // group.bench_with_input(BenchmarkId::new("old", i), &i, |b, i| {
-        //     use bell_react::*;
+        //     use bweb_react::*;
 
         //     let mut app = App::new();
         //     app.add_plugins(ReactPlugin);
@@ -219,7 +219,7 @@ fn observer_benches(c: &mut Criterion) {
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
     for i in (0..5).map(|i| 10usize.pow(i)) {
         // group.bench_with_input(BenchmarkId::new("old", i), &i, |b, i| {
-        //     use bell_react::*;
+        //     use bweb_react::*;
 
         //     let mut app = App::new();
         //     app.add_plugins(ReactPlugin);

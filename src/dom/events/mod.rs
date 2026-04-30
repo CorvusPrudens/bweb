@@ -1,5 +1,5 @@
 use super::{DomSystems, html::EventTarget};
-use crate::{js_err::JsErr, web_runner::ScheduleTrigger};
+use crate::{js_err::JsErr, runner::ScheduleTrigger};
 use bevy_app::prelude::*;
 use bevy_ecs::{
     error::ErrorContext,
@@ -312,7 +312,7 @@ where
                 let trigger = handler.trigger;
                 let name = handler.name.clone();
                 let function = Closure::new(move |ev: E| {
-                    let res = crate::web_runner::app_scope(|app| {
+                    let res = crate::runner::app_scope(|app| {
                         let world = app.world_mut();
 
                         if trigger {

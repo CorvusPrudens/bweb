@@ -8,7 +8,7 @@ bevy_ecs = { version = "0.18.0", default-features = false }
 bevy_app = { version = "0.18.0", default-features = false }
 bevy_utils = { version = "0.18.0", default-features = false }
 bevy_platform = { version = "0.18.0", default-features = false, features = ["alloc"] }
-bevy_query_observer = { path = "../bevy_query_observer" }
+bevy_query_observer = { path = "../../../bevy_query_observer" }
 log = "0.4"
 variadics_please = "1.1.0"
 uuid = { version = "1.18", default-features = false, features = ["v4"] }

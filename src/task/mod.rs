@@ -1,12 +1,15 @@
 #![allow(async_fn_in_trait, clippy::unit_arg, clippy::single_match)]
 
+use crate::runner::ScheduleTrigger;
 use bevy_ecs::{
     error::ErrorContext,
     prelude::*,
-    system::{RunSystemError, RunSystemOnce},
+    system::{IntoResult, RunSystemError},
 };
 
-use crate::web_runner::ScheduleTrigger;
+pub mod system_once;
+
+use system_once::{RunSystemOnceOnce, SystemOnceFunction};
 
 /// A handle providing access to the world within tasks.
 ///
@@ -26,9 +29,10 @@ impl TaskWorld {
     /// Run a one-shot system.
     pub fn run<S, O, M>(&mut self, system: S) -> Result<O>
     where
-        S: IntoSystem<(), O, M>,
+        S: SystemOnceFunction<M, In = (), Out: IntoResult<O>>,
+        S::Param: 'static,
     {
-        self.with(|world| world.run_system_once(system))
+        self.with(|world| world.run_once(system))
             .map_err(|e| match e {
                 RunSystemError::Failed(f) => f,
                 RunSystemError::Skipped(s) => s.into(),
@@ -53,7 +57,7 @@ impl TaskWorld {
     where
         F: FnOnce(&mut World) -> O,
     {
-        crate::web_runner::app_scope(|app| {
+        crate::runner::app_scope(|app| {
             let world = app.world_mut();
             if trigger {
                 world.resource::<ScheduleTrigger>().trigger_async();
@@ -102,7 +106,7 @@ where
         let world = TaskWorld(());
         let result = task.run(world).await;
 
-        let res = crate::web_runner::app_scope(|app| match result {
+        let res = crate::runner::app_scope(|app| match result {
             Err(e) => {
                 let tick = app.world_mut().change_tick();
                 match app.get_error_handler() {
@@ -225,7 +229,7 @@ where
     let window = web_sys::window().expect("Attempted to queue microtask on non-web platform");
 
     let task = Closure::once_into_js(move || {
-        let res = crate::web_runner::app_scope(task);
+        let res = crate::runner::app_scope(task);
         if res.is_err() {
             log::error!("Failed to borrow app for microtask.");
         }
