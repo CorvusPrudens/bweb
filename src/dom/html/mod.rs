@@ -8,10 +8,12 @@ use wasm_bindgen::JsCast;
 
 pub mod elements;
 mod inner_html;
+mod node_lookup;
 pub mod properties;
 pub mod svg;
 
 pub use inner_html::InnerHtml;
+pub use node_lookup::NodeLookup;
 
 pub(super) struct HtmlPlugin;
 
@@ -22,6 +24,7 @@ impl Plugin for HtmlPlugin {
             InnerHtml::plugin,
             properties::PropertyPlugin,
         ))
+        .init_resource::<node_lookup::NodeEntityMap>()
         .add_systems(
             PreStartup,
             initialize_window.in_set(DomStartupSystems::Window),
@@ -106,9 +109,9 @@ fn initialize_window(mut commands: Commands) -> Result {
     let html = commands
         .spawn((
             elements::Html,
-            HtmlElement(SendWrapper::new(html.clone().dyn_into().unwrap())),
-            Element(SendWrapper::new(html.clone().dyn_into().unwrap())),
-            Node(SendWrapper::new(html.dyn_into().unwrap())),
+            HtmlElement(SendWrapper::new(html.clone().unchecked_into())),
+            Element(SendWrapper::new(html.clone().unchecked_into())),
+            Node(SendWrapper::new(html.unchecked_into())),
         ))
         .id();
 
@@ -116,9 +119,9 @@ fn initialize_window(mut commands: Commands) -> Result {
     commands.spawn((
         ChildOf(html),
         elements::Head,
-        HtmlElement(SendWrapper::new(head.clone().dyn_into().unwrap())),
-        Element(SendWrapper::new(head.clone().dyn_into().unwrap())),
-        Node(SendWrapper::new(head.dyn_into().unwrap())),
+        HtmlElement(SendWrapper::new(head.clone().unchecked_into())),
+        Element(SendWrapper::new(head.clone().unchecked_into())),
+        Node(SendWrapper::new(head.unchecked_into())),
     ));
 
     let body = document.body().ok_or("document body should be available")?;
@@ -127,8 +130,8 @@ fn initialize_window(mut commands: Commands) -> Result {
         ChildOf(html),
         elements::Body,
         HtmlElement(SendWrapper::new(body.clone())),
-        Element(SendWrapper::new(body.clone().dyn_into().unwrap())),
-        Node(SendWrapper::new(body.dyn_into().unwrap())),
+        Element(SendWrapper::new(body.clone().unchecked_into())),
+        Node(SendWrapper::new(body.unchecked_into())),
         crate::relative_mouse::RelativeMouse::default(),
     ));
 
@@ -173,6 +176,10 @@ impl Node {
         let event_target: &web_sys::EventTarget = element.0.as_ref();
         let event_target = event_target.clone();
 
+        if let Some(map) = world.get_resource::<node_lookup::NodeEntityMap>() {
+            node_lookup::register(map, &element.0, context.entity);
+        }
+
         world
             .commands()
             .entity(context.entity)
@@ -202,16 +209,12 @@ fn inject_element(
     mut commands: Commands,
 ) -> Result {
     for (entity, element) in &elements {
-        let element: web_sys::HtmlElement = document
-            .create_element(element.0)
-            .js_err()?
-            .dyn_into()
-            .unwrap();
+        let element = document.create_element(element.0).js_err()?;
 
         commands.entity(entity).insert((
-            HtmlElement(SendWrapper::new(element.clone())),
-            Element(SendWrapper::new(element.clone().dyn_into().unwrap())),
-            Node(SendWrapper::new(element.dyn_into().unwrap())),
+            Element(SendWrapper::new(element.clone())),
+            HtmlElement(SendWrapper::new(element.clone().unchecked_into())),
+            Node(SendWrapper::new(element.unchecked_into())),
         ));
     }
 
@@ -262,7 +265,7 @@ fn inject_text(
     mut commands: Commands,
 ) -> Result {
     for (entity, text) in &texts {
-        let element: web_sys::Node = document.create_text_node(&text.0).dyn_into().unwrap();
+        let element: web_sys::Node = document.create_text_node(&text.0).unchecked_into();
         commands
             .entity(entity)
             .insert(Node(SendWrapper::new(element)));

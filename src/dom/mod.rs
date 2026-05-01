@@ -154,6 +154,7 @@ pub mod prelude {
     pub use super::attr;
     pub use super::class::*;
     pub use super::events::*;
+    pub use super::html::NodeLookup;
     pub use super::html::{elements::*, properties::*, svg::*, *};
     pub use crate::{class, classes, events};
 }

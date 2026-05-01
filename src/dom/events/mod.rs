@@ -10,6 +10,7 @@ use bevy_ecs::{
 };
 use bevy_query_observer::{AddStopObserver, Stop};
 use bevy_utils::prelude::DebugName;
+use core::ops::Deref;
 use send_wrapper::SendWrapper;
 use std::{any::TypeId, collections::HashSet};
 use wasm_bindgen::{JsCast, convert::FromWasmAbi, prelude::Closure};
@@ -194,17 +195,22 @@ impl<E> JsEvent<E> {
     }
 }
 
-impl<E> AsRef<E> for JsEvent<E> {
-    fn as_ref(&self) -> &E {
-        &self.event
-    }
-}
-
-impl<E> core::ops::Deref for JsEvent<E> {
+impl<E> Deref for JsEvent<E> {
     type Target = E;
 
     fn deref(&self) -> &Self::Target {
-        self.as_ref()
+        self.event.deref()
+    }
+}
+
+// Taken from the docs on `AsRef`
+impl<T, E> AsRef<T> for JsEvent<E>
+where
+    T: ?Sized,
+    <JsEvent<E> as Deref>::Target: AsRef<T>,
+{
+    fn as_ref(&self) -> &T {
+        self.deref().as_ref()
     }
 }
 
