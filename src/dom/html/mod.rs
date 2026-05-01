@@ -95,7 +95,7 @@ fn initialize_window(mut commands: Commands) -> Result {
         .document()
         .ok_or("browser document should be available")?;
     let document_node: &web_sys::Node = &document;
-    let document_html = document.dyn_ref::<web_sys::HtmlDocument>().unwrap();
+    let document_html = document.unchecked_ref::<web_sys::HtmlDocument>();
 
     commands.spawn((
         Node(SendWrapper::new(document_node.clone())),
@@ -166,9 +166,7 @@ impl AsRef<web_sys::Node> for Node {
 impl Node {
     fn on_remove_hook(world: DeferredWorld, context: HookContext) {
         let element = world.get::<Node>(context.entity).unwrap();
-        if let Some(element) = element.0.dyn_ref::<web_sys::Element>() {
-            element.remove();
-        }
+        element.0.unchecked_ref::<web_sys::Element>().remove();
     }
 
     fn on_insert_hook(mut world: DeferredWorld, context: HookContext) {
@@ -276,7 +274,7 @@ fn inject_text(
 
 fn update_text(texts: Query<(&Text, &Node), Changed<Text>>) {
     for (text, node) in &texts {
-        let node: &web_sys::Text = node.0.dyn_ref().unwrap();
+        let node: &web_sys::Text = node.0.unchecked_ref();
         node.set_data(&text.0);
     }
 }

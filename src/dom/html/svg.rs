@@ -30,16 +30,14 @@ fn inject_svg_element(
     mut commands: Commands,
 ) -> Result {
     for (entity, element) in &elements {
-        let element: web_sys::SvgElement = document
+        let element = document
             .create_element_ns(Some("http://www.w3.org/2000/svg"), element.0)
-            .js_err()?
-            .dyn_into()
-            .unwrap();
+            .js_err()?;
 
         commands.entity(entity).insert((
-            super::SvgElement(SendWrapper::new(element.clone())),
-            super::Element(SendWrapper::new(element.clone().dyn_into().unwrap())),
-            super::Node(SendWrapper::new(element.dyn_into().unwrap())),
+            super::Element(SendWrapper::new(element.clone())),
+            super::SvgElement(SendWrapper::new(element.clone().unchecked_into())),
+            super::Node(SendWrapper::new(element.unchecked_into())),
         ));
     }
 
