@@ -14,6 +14,7 @@ use core::ops::Deref;
 use send_wrapper::SendWrapper;
 use std::{any::TypeId, collections::HashSet};
 use wasm_bindgen::{JsCast, convert::FromWasmAbi, prelude::Closure};
+use web_sys::AddEventListenerOptions;
 
 mod defer;
 mod handler;
@@ -41,6 +42,7 @@ pub struct Bevent {
     event: &'static str,
     trigger: bool,
     capturing: bool,
+    passive: Option<bool>,
 }
 
 #[cfg(feature = "debug")]
@@ -82,6 +84,7 @@ impl Bevent {
             event,
             trigger: true,
             capturing: false,
+            passive: None,
         }
     }
 
@@ -103,6 +106,15 @@ impl Bevent {
         }
     }
 
+    /// Set the passive option.
+    #[inline(always)]
+    pub fn with_passive(self, passive: bool) -> Self {
+        Self {
+            passive: Some(passive),
+            ..self
+        }
+    }
+
     fn transform(world: &mut World) {
         let mut clicks =
             world.query_filtered::<Entity, (With<Self>, Without<EventHandler<web_sys::Event>>)>();
@@ -116,6 +128,7 @@ impl Bevent {
             let trigger = ev.trigger;
             let capturing = ev.capturing;
             let event = ev.event;
+            let passive = ev.passive;
 
             let (id, name) = handler(world);
             world.entity_mut(click).insert(EventHandler {
@@ -125,6 +138,7 @@ impl Bevent {
                 closure: None,
                 trigger,
                 capturing,
+                passive,
             });
         }
     }
@@ -259,6 +273,7 @@ pub struct EventHandler<E: FromWasmAbi + 'static> {
     /// Trigger an ECS update cycle.
     trigger: bool,
     capturing: bool,
+    passive: Option<bool>,
 }
 
 impl<E: FromWasmAbi + 'static> EventHandler<E> {
@@ -303,12 +318,19 @@ where
     for (entity, mut handler, node_entity) in &mut handlers {
         let node = nodes.get(node_entity.0)?;
 
+        let options = AddEventListenerOptions::new();
+
+        options.set_capture(handler.capturing);
+        if let Some(passive) = handler.passive {
+            options.set_passive(passive);
+        }
+
         match handler.closure.as_ref() {
             Some(closure) => {
-                node.add_event_listener_with_callback_and_bool(
+                node.add_event_listener_with_callback_and_add_event_listener_options(
                     handler.event,
                     closure.as_ref().unchecked_ref(),
-                    handler.capturing,
+                    &options,
                 )
                 .js_err()?;
             }
@@ -369,10 +391,10 @@ where
                     }
                 });
 
-                node.add_event_listener_with_callback_and_bool(
+                node.add_event_listener_with_callback_and_add_event_listener_options(
                     handler.event,
                     function.as_ref().unchecked_ref(),
-                    handler.capturing,
+                    &options,
                 )
                 .js_err()?;
 
