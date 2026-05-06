@@ -8,12 +8,12 @@ pub struct SWorld<'w> {
 }
 
 impl<'w> SWorld<'w> {
-    pub fn get<C: Component>(&self, target: impl EntityTarget) -> Option<&'_ C> {
-        let entity = target.entity(&self.world.resource::<Targets>())?;
+    pub fn get<C: Component>(&self, target: impl Into<EntityTarget>) -> Option<&'_ C> {
+        let entity = target.into().get(&self.world.resource::<Targets>())?;
 
         let id = self.world.component_id::<C>()?;
         if let Some(observer) = super::reactive_observer::SignalObserver::get() {
-            observer.add_components(entity, &[id]);
+            observer.add_components(entity.into(), &[id]);
         }
 
         self.world.get(entity)

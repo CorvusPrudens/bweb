@@ -124,18 +124,29 @@ impl core::fmt::Display for TargetQueryError {
     }
 }
 
-pub trait EntityTarget {
-    fn entity(self, targets: &Targets) -> Option<Entity>;
+#[derive(Clone, Copy)]
+pub enum EntityTarget {
+    Entity(Entity),
+    Target(Target),
 }
 
-impl EntityTarget for Entity {
-    fn entity(self, _: &Targets) -> Option<Entity> {
-        Some(self)
+impl EntityTarget {
+    pub fn get(&self, targets: &Targets) -> Option<Entity> {
+        match self {
+            Self::Entity(e) => Some(*e),
+            Self::Target(t) => targets.get(t).ok(),
+        }
     }
 }
 
-impl EntityTarget for Target {
-    fn entity(self, targets: &Targets) -> Option<Entity> {
-        targets.0.get(&self).copied()
+impl From<Entity> for EntityTarget {
+    fn from(value: Entity) -> Self {
+        EntityTarget::Entity(value)
+    }
+}
+
+impl From<Target> for EntityTarget {
+    fn from(value: Target) -> Self {
+        EntityTarget::Target(value)
     }
 }

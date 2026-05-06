@@ -1,13 +1,10 @@
-use bevy_ecs::{
-    change_detection::Tick,
-    component::ComponentId,
-    prelude::*,
-};
+use bevy_ecs::{change_detection::Tick, component::ComponentId, prelude::*};
 use bevy_platform::collections::HashSet;
 use std::sync::{Arc, RwLock, Weak};
 use std::{cell::RefCell, collections::HashMap};
 
 use crate::signal::SignalTick;
+use crate::target::EntityTarget;
 
 #[derive(Component, Clone)]
 pub struct SubscriberSet(Arc<RwLock<SignalSetInner>>);
@@ -21,7 +18,7 @@ impl SubscriberSet {
         self.0.write().unwrap().signals.push(signal)
     }
 
-    pub fn add_components(&self, entity: Entity, components: &[ComponentId]) {
+    pub fn add_components(&self, entity: EntityTarget, components: &[ComponentId]) {
         let mut writer = self.0.write().unwrap();
 
         writer.entities.push(EntitySubscriber {
@@ -46,17 +43,17 @@ impl SubscriberSet {
     pub fn has_changed(&self, world: &World, last_run: Tick, this_run: Tick) -> bool {
         let inner = self.0.read().unwrap();
         let removed = world.resource::<RemovedSet>();
+        let targets = world.resource::<crate::target::Targets>();
 
         for entity_set in &inner.entities {
-            if let Ok(entity) = world.get_entity(entity_set.entity) {
+            if let Some(entity) = entity_set.entity.get(targets)
+                && let Ok(entity_ref) = world.get_entity(entity)
+            {
                 if entity_set.components.iter().any(|c| {
-                    entity
+                    entity_ref
                         .get_change_ticks_by_id(*c)
                         .is_some_and(|tick| tick.is_changed(last_run, this_run))
-                        || removed
-                            .0
-                            .get(&entity_set.entity)
-                            .is_some_and(|set| set.contains(c))
+                        || removed.0.get(&entity).is_some_and(|set| set.contains(c))
                 }) {
                     return true;
                 }
@@ -115,7 +112,7 @@ pub struct SignalSetInner {
 }
 
 pub struct EntitySubscriber {
-    entity: Entity,
+    entity: EntityTarget,
     components: Vec<ComponentId>,
 }
 

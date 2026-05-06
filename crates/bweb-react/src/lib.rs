@@ -168,15 +168,16 @@ pub enum ReactScheduleSystems {
 pub trait SignalExt {
     fn query<D>(
         &mut self,
-        target: impl target::EntityTarget + Clone + Send + Sync + 'static,
+        target: impl Into<target::EntityTarget>,
     ) -> signal::DerivedSignal<Option<<D as QueryClone>::Output>>
     where
         D: QueryClone + ReadOnlyQueryData + 'static,
         <D as QueryClone>::Output: Clone + Send + Sync + 'static,
     {
+        let target: target::EntityTarget = target.into();
         self.derive(move |query: SQuery<D>| {
             query
-                .get(target.clone())
+                .get(target)
                 .ok()
                 .map(|v| <D as QueryClone>::tuple_clone(v))
         })

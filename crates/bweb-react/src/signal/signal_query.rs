@@ -107,22 +107,23 @@ where
     #[inline]
     pub fn get(
         &self,
-        target: impl EntityTarget,
+        target: impl Into<EntityTarget>,
     ) -> Result<ROQueryItem<'_, 's, D>, SignalQueryError> {
-        let entity = target
-            .entity(&self.targets)
-            .ok_or(SignalQueryError::NoSuchTarget)?;
+        let entity = target.into();
 
-        let result = self.query.get(entity).map_err(SignalQueryError::Entity);
         if let Some(observer) = super::reactive_observer::SignalObserver::get() {
             observer.add_components(entity, self.components);
         }
 
-        result
+        let entity = entity
+            .get(&self.targets)
+            .ok_or(SignalQueryError::NoSuchTarget)?;
+
+        self.query.get(entity).map_err(SignalQueryError::Entity)
     }
 
     #[inline]
-    pub fn iter_many<EntityList: IntoIterator<Item: EntityTarget>>(
+    pub fn iter_many<EntityList: IntoIterator<Item: Into<EntityTarget>>>(
         &self,
         entities: EntityList,
     ) -> impl Iterator<Item = ROQueryItem<'_, 's, D>> {
