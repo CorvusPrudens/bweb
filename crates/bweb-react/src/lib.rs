@@ -94,14 +94,14 @@ fn evaluate_reactions(world: &mut World) {
         let mut total = 0;
         let reaction_limit = world.resource::<Reactions>().reaction_limit;
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "dev")]
         #[derive(Default)]
         struct ReactionReport {
             locations: HashSet<MaybeLocation>,
             counts: Vec<usize>,
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "dev")]
         let mut report = ReactionReport::default();
 
         for _ in 0..reaction_limit {
@@ -113,7 +113,7 @@ fn evaluate_reactions(world: &mut World) {
             let reactions = world.resource::<Reactions>();
             let new_reactions = reactions.count;
 
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "dev")]
             {
                 report.locations.extend(reactions.locations.iter().cloned());
                 report.counts.push(new_reactions);
@@ -124,7 +124,7 @@ fn evaluate_reactions(world: &mut World) {
             }
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "dev")]
         {
             if !matches!(report.counts.as_slice(), &[0]) {
                 let mut locations = report

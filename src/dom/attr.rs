@@ -261,6 +261,7 @@ boolean_attribute! {Alpha, "alpha"}
 boolean_attribute! {Async, "async"}
 boolean_attribute! {Autocapitalize, "autocapitalize"}
 boolean_attribute! {Autoplay, "autoplay"}
+boolean_attribute! {Autofocus, "autofocus"}
 boolean_attribute! {Controls, "controls"}
 boolean_attribute! {Default, "default"}
 boolean_attribute! {Defer, "defer"}
