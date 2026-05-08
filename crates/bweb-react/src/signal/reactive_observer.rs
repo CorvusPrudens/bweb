@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock, Weak};
 use std::{cell::RefCell, collections::HashMap};
 
 use crate::signal::SignalTick;
-use crate::target::EntityTarget;
+use crate::target::{EntityTarget, Targets};
 
 #[derive(Component, Clone)]
 pub struct SubscriberSet(Arc<RwLock<SignalSetInner>>);
@@ -43,20 +43,19 @@ impl SubscriberSet {
     pub fn has_changed(&self, world: &World, last_run: Tick, this_run: Tick) -> bool {
         let inner = self.0.read().unwrap();
         let removed = world.resource::<RemovedSet>();
-        let targets = world.resource::<crate::target::Targets>();
+        let targets = world.resource::<Targets>();
 
         for entity_set in &inner.entities {
             if let Some(entity) = entity_set.entity.get(targets)
                 && let Ok(entity_ref) = world.get_entity(entity)
-            {
-                if entity_set.components.iter().any(|c| {
+                && entity_set.components.iter().any(|c| {
                     entity_ref
                         .get_change_ticks_by_id(*c)
                         .is_some_and(|tick| tick.is_changed(last_run, this_run))
                         || removed.0.get(&entity).is_some_and(|set| set.contains(c))
-                }) {
-                    return true;
-                }
+                })
+            {
+                return true;
             }
         }
 

@@ -1,5 +1,6 @@
 use bevy_app::prelude::*;
 use bevy_ecs::{
+    change_detection::Tick,
     prelude::*,
     system::{SystemChangeTick, SystemId},
 };
@@ -9,7 +10,7 @@ use std::{
 };
 
 use super::reactive_observer::SubscriberSet;
-use crate::{ReactSchedule, ReactScheduleSystems, Reactions};
+use crate::{ReactSchedule, ReactScheduleSystems, Reactions, effect::EffectState, target::Targets};
 
 mod derived;
 mod memo;
@@ -24,10 +25,11 @@ impl Plugin for SystemPlugin {
         app.init_resource::<SignalEvaluations>().add_systems(
             ReactSchedule,
             (
-                SignalState::collect_memos,
-                SignalState::evaluate_memos,
-                SignalState::detect_changes,
-                SignalState::evaluate,
+                // SignalState::collect_memos,
+                // SignalState::evaluate_memos,
+                SignalState::evaluate_signals,
+                // SignalState::detect_changes,
+                // SignalState::evaluate,
             )
                 .chain()
                 .in_set(ReactScheduleSystems::EvaluateSignals),
@@ -70,71 +72,185 @@ impl SignalState {
         Self { system, outputs }
     }
 
-    fn detect_changes(
-        signals: Query<(Entity, &SubscriberSet, &SignalStateContainer)>,
-        world: &World,
-        tick: SystemChangeTick,
-        evals: Res<SignalEvaluations>,
+    #[expect(clippy::collapsible_if)]
+    fn evaluate_signals(
+        world: &mut World,
+        signals: &mut QueryState<
+            (
+                Entity,
+                Option<Ref<SubscriberSet>>,
+                Has<SignalStateContainer>,
+                Has<EffectState>,
+            ),
+            Or<(With<SignalStateContainer>, With<EffectState>)>,
+        >,
+        containers: &mut QueryState<&SignalStateContainer>,
+        mut items: Local<Vec<(Entity, Option<SubscriberSet>, bool, bool, bool)>>,
+        mut run_2n: Local<Option<Tick>>,
+        // tick: SystemChangeTick,
+        // evals: Res<SignalEvaluations>,
+        // targets: Res<Targets>,
     ) {
-        let mut evals = evals.0.lock().unwrap();
-        for (entity, set, state) in signals {
-            if set.has_changed(world, tick.last_run(), tick.this_run()) {
-                evals.push(Evaluation {
-                    entity,
-                    inputs_changed: true,
-                });
-            } else if !state.0.as_ref().unwrap().outputs.new_inserters.is_empty() {
-                evals.push(Evaluation {
-                    entity,
-                    inputs_changed: false,
-                });
+        let last_world_run = world.last_change_tick();
+
+        let last_run = match *run_2n {
+            Some(run) => run,
+            None => last_world_run,
+        };
+
+        let this_run = world.change_tick();
+        items.extend(signals.iter(world).map(|(e, s, s1, s2)| {
+            (
+                e,
+                s.as_ref().map(|s| s.as_ref().clone()),
+                s.map(|s| s.is_added()).unwrap_or_default(),
+                s1,
+                s2,
+            )
+        }));
+
+        let mut reactions = 0;
+        for (entity, set, is_added, is_basic_signal, is_effect) in items.drain(..) {
+            match set {
+                Some(set) => {
+                    if is_basic_signal {
+                        if set.has_changed(world, last_run, this_run) {
+                            if evaluate_signal(world, entity, true) {
+                                reactions += 1;
+                            }
+                        } else if let Ok(state) = containers.get(world, entity)
+                            && !state.0.as_ref().unwrap().outputs.new_inserters.is_empty()
+                        {
+                            if evaluate_signal(world, entity, false) {
+                                reactions += 1;
+                            }
+                        }
+                    } else if is_effect {
+                        if is_added || set.has_changed(world, last_run, this_run) {
+                            match EffectState::evaluate(world, entity) {
+                                Ok(true) => {
+                                    reactions += 1;
+                                }
+                                Err(e) => {
+                                    log::warn!("failed to evaluate effect: {e}");
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if evaluate_memo(world, entity) {
+                        reactions += 1;
+                    }
+                }
             }
         }
+
+        world.resource_mut::<Reactions>().count += reactions;
+        *run_2n = Some(last_world_run);
+
+        // let mut evals = evals.0.lock().unwrap();
+        // for (entity, set, state) in signals {
+        //     if set.has_changed(world, &targets, tick.last_run(), tick.this_run()) {
+        //         evals.push(Evaluation {
+        //             entity,
+        //             inputs_changed: true,
+        //         });
+        //     } else if !state.0.as_ref().unwrap().outputs.new_inserters.is_empty() {
+        //         evals.push(Evaluation {
+        //             entity,
+        //             inputs_changed: false,
+        //         });
+        //     }
+        // }
     }
 
-    fn evaluate(world: &mut World) -> Result {
-        world.resource_scope::<SignalEvaluations, _>(|world, evals| -> Result {
-            let mut reactions = 0;
-            for Evaluation {
-                entity: eval,
-                inputs_changed,
-            } in evals.0.lock().unwrap().drain(..)
-            {
-                if evaluate_signal(world, eval, inputs_changed) {
-                    reactions += 1;
-                }
-            }
+    // fn evaluate(world: &mut World) -> Result {
+    //     world.resource_scope::<SignalEvaluations, _>(|world, evals| -> Result {
+    //         let mut reactions = 0;
+    //         for Evaluation {
+    //             entity: eval,
+    //             inputs_changed,
+    //         } in evals.0.lock().unwrap().drain(..)
+    //         {
+    //             if evaluate_signal(world, eval, inputs_changed) {
+    //                 reactions += 1;
+    //             }
+    //         }
+    //
+    //         world.resource_mut::<Reactions>().count += reactions;
+    //
+    //         Ok(())
+    //     })
+    // }
 
-            world.resource_mut::<Reactions>().count += reactions;
+    // fn detect_changes(
+    //     signals: Query<(Entity, &SubscriberSet, &SignalStateContainer)>,
+    //     world: &World,
+    //     tick: SystemChangeTick,
+    //     evals: Res<SignalEvaluations>,
+    //     targets: Res<Targets>,
+    // ) {
+    //     let mut evals = evals.0.lock().unwrap();
+    //     for (entity, set, state) in signals {
+    //         if set.has_changed(world, &targets, tick.last_run(), tick.this_run()) {
+    //             evals.push(Evaluation {
+    //                 entity,
+    //                 inputs_changed: true,
+    //             });
+    //         } else if !state.0.as_ref().unwrap().outputs.new_inserters.is_empty() {
+    //             evals.push(Evaluation {
+    //                 entity,
+    //                 inputs_changed: false,
+    //             });
+    //         }
+    //     }
+    // }
+    //
+    // fn evaluate(world: &mut World) -> Result {
+    //     world.resource_scope::<SignalEvaluations, _>(|world, evals| -> Result {
+    //         let mut reactions = 0;
+    //         for Evaluation {
+    //             entity: eval,
+    //             inputs_changed,
+    //         } in evals.0.lock().unwrap().drain(..)
+    //         {
+    //             if evaluate_signal(world, eval, inputs_changed) {
+    //                 reactions += 1;
+    //             }
+    //         }
+    //
+    //         world.resource_mut::<Reactions>().count += reactions;
+    //
+    //         Ok(())
+    //     })
+    // }
 
-            Ok(())
-        })
-    }
-
-    fn collect_memos(
-        signals: Query<Entity, (With<SignalStateContainer>, Without<SubscriberSet>)>,
-        evals: Res<SignalEvaluations>,
-    ) {
-        let mut evals = evals.0.lock().unwrap();
-        evals.extend(signals.iter().map(|entity| Evaluation {
-            entity,
-            inputs_changed: false,
-        }));
-    }
-
-    fn evaluate_memos(world: &mut World) -> Result {
-        world.resource_scope::<SignalEvaluations, _>(|world, evals| -> Result {
-            let mut reactions = 0;
-            for Evaluation { entity: eval, .. } in evals.0.lock().unwrap().drain(..) {
-                if evaluate_memo(world, eval) {
-                    reactions += 1;
-                }
-            }
-            world.resource_mut::<Reactions>().count += reactions;
-
-            Ok(())
-        })
-    }
+    // fn collect_memos(
+    //     signals: Query<Entity, (With<SignalStateContainer>, Without<SubscriberSet>)>,
+    //     evals: Res<SignalEvaluations>,
+    // ) {
+    //     let mut evals = evals.0.lock().unwrap();
+    //     evals.extend(signals.iter().map(|entity| Evaluation {
+    //         entity,
+    //         inputs_changed: false,
+    //     }));
+    // }
+    //
+    // fn evaluate_memos(world: &mut World) -> Result {
+    //     world.resource_scope::<SignalEvaluations, _>(|world, evals| -> Result {
+    //         let mut reactions = 0;
+    //         for Evaluation { entity: eval, .. } in evals.0.lock().unwrap().drain(..) {
+    //             if evaluate_memo(world, eval) {
+    //                 reactions += 1;
+    //             }
+    //         }
+    //         world.resource_mut::<Reactions>().count += reactions;
+    //
+    //         Ok(())
+    //     })
+    // }
 }
 
 pub(crate) fn evaluate_signal(world: &mut World, signal: Entity, inputs_changed: bool) -> bool {

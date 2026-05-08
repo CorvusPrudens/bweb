@@ -17,12 +17,12 @@ pub(crate) struct EffectPlugin;
 
 impl Plugin for EffectPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EffectEvaluations>().add_systems(
-            ReactSchedule,
-            (detect_changes, evaluate)
-                .chain()
-                .in_set(ReactScheduleSystems::EvaluateEffects),
-        );
+        // app.init_resource::<EffectEvaluations>().add_systems(
+        //     ReactSchedule,
+        //     (detect_changes, evaluate)
+        //         .chain()
+        //         .in_set(ReactScheduleSystems::EvaluateEffects),
+        // );
     }
 }
 
@@ -44,7 +44,7 @@ impl Effect {
 
 #[derive(Component, Clone, Copy)]
 #[component(on_replace = Self::on_replace_hook)]
-struct EffectState {
+pub(crate) struct EffectState {
     system: SystemId,
 }
 
@@ -56,6 +56,20 @@ impl EffectState {
 
         let system = data.system;
         world.commands().unregister_system(system);
+    }
+
+    pub fn evaluate(world: &mut World, entity: Entity) -> Result<bool> {
+        let Some(&EffectState { system }) = world.get::<EffectState>(entity) else {
+            return Ok(false);
+        };
+        let Some(set) = world.get::<SubscriberSet>(entity).cloned() else {
+            return Ok(false);
+        };
+
+        set.clear();
+        reactive_observer::SignalObserver::observe(&set, || world.run_system(system))?;
+
+        Ok(true)
     }
 }
 
@@ -94,17 +108,9 @@ fn evaluate(world: &mut World) -> Result {
     world.resource_scope::<EffectEvaluations, _>(|world, evals| -> Result {
         let mut reactions = 0;
         for eval in evals.0.lock().unwrap().drain(..) {
-            let Some(&EffectState { system }) = world.get::<EffectState>(eval) else {
-                continue;
-            };
-            let Some(set) = world.get::<SubscriberSet>(eval).cloned() else {
-                continue;
-            };
-
-            set.clear();
-            reactive_observer::SignalObserver::observe(&set, || world.run_system(system))?;
-
-            reactions += 1;
+            if EffectState::evaluate(world, eval)? {
+                reactions += 1;
+            }
         }
 
         world.resource_mut::<Reactions>().count += reactions;
