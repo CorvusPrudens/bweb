@@ -180,8 +180,7 @@ impl std::fmt::Debug for Navigator<'_, '_> {
 
 impl<'w, 's> Navigator<'w, 's> {
     pub fn navigate(&mut self, href: &str) -> Result<()> {
-        let location = self.window.location();
-        let base = location.href().js_err()?;
+        let base = self.window.location().href().js_err()?;
 
         let absolute = web_sys::Url::new(href).is_ok();
         if absolute {
@@ -195,9 +194,9 @@ impl<'w, 's> Navigator<'w, 's> {
 
         self.window
             .history()
-            .unwrap()
+            .js_err()?
             .push_state_with_url(&JsValue::NULL, "", Some(&href))
-            .unwrap();
+            .js_err()?;
         self.pathname.update(path.clone());
 
         Ok(())
