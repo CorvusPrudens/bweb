@@ -10,6 +10,8 @@ use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::JsValue;
 
+pub mod query;
+
 // TODO: okay this should probably be a lil entity set guy
 #[derive(Default)]
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -17,20 +19,23 @@ pub struct RouterPlugin;
 
 impl Plugin for RouterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            PreStartup,
-            initialize_router.in_set(DomStartupSystems::Pathname),
-        )
-        .add_systems(
-            PostUpdate,
-            (
-                resolve_routes.in_set(DomSystems::ResolveRoutes),
-                hook_into_anchors
-                    .after(DomSystems::Reparent)
-                    .before(DomSystems::Attach),
-            ),
-        )
-        .init_resource::<RouteParams>();
+        app.add_plugins(query::QueryPlugin)
+            .add_systems(
+                PreStartup,
+                initialize_router.in_set(DomStartupSystems::Pathname),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    resolve_routes
+                        .in_set(DomSystems::ResolveRoutes)
+                        .run_if(resource_changed::<Pathname>),
+                    hook_into_anchors
+                        .after(DomSystems::Reparent)
+                        .before(DomSystems::Attach),
+                ),
+            )
+            .init_resource::<RouteParams>();
 
         #[cfg(all(debug_assertions, feature = "debug"))]
         app.add_systems(
@@ -71,11 +76,13 @@ fn initialize_router(window: Single<(Entity, &Window)>, mut commands: Commands) 
         ev::pop_state(
             |_: Ev<web_sys::PopStateEvent>,
              window: Single<&Window>,
-             mut pathname: ResMut<Pathname>| {
+             mut pathname: ResMut<Pathname>,
+             mut params: ResMut<query::QueryParams>| {
                 let location = window.location();
                 let base = location.href().unwrap();
                 let url = web_sys::Url::new(&base).unwrap();
                 let new_pathname = url.pathname();
+                params.update(&url);
 
                 pathname.update(new_pathname);
             },
@@ -91,6 +98,7 @@ fn initialize_router(window: Single<(Entity, &Window)>, mut commands: Commands) 
         pathname,
         previous_path: None,
     });
+    commands.insert_resource(query::QueryParams::from_url(&url));
 
     Ok(())
 }
@@ -142,7 +150,8 @@ fn hook_into_anchors(
             ev::click(
                 move |ev: Ev<web_sys::PointerEvent>,
                       window: Single<&Window>,
-                      mut pathname: ResMut<Pathname>| {
+                      mut pathname: ResMut<Pathname>,
+                      mut params: ResMut<query::QueryParams>| {
                     if ev.ctrl_key() || ev.meta_key() {
                         return;
                     }
@@ -155,6 +164,8 @@ fn hook_into_anchors(
                         .unwrap();
 
                     pathname.update(path.clone());
+                    // TODO: may not properly capture query params in links
+                    params.clear();
                 },
             ),
         ));
@@ -167,6 +178,7 @@ fn hook_into_anchors(
 pub struct Navigator<'w, 's> {
     window: Single<'w, 's, &'static Window>,
     pathname: ResMut<'w, Pathname>,
+    params: ResMut<'w, query::QueryParams>,
 }
 
 #[cfg(feature = "debug")]
@@ -180,6 +192,7 @@ impl std::fmt::Debug for Navigator<'_, '_> {
 
 impl<'w, 's> Navigator<'w, 's> {
     pub fn navigate(&mut self, href: &str) -> Result<()> {
+        // TODO: consider doing nothing when the urls are identical
         let base = self.window.location().href().js_err()?;
 
         let absolute = web_sys::Url::new(href).is_ok();
@@ -198,6 +211,7 @@ impl<'w, 's> Navigator<'w, 's> {
             .push_state_with_url(&JsValue::NULL, "", Some(&href))
             .js_err()?;
         self.pathname.update(path.clone());
+        self.params.update(&url);
 
         Ok(())
     }

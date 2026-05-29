@@ -18,9 +18,11 @@ use web_sys::AddEventListenerOptions;
 
 mod defer;
 mod handler;
+mod params;
 
 pub use defer::*;
 pub use handler::*;
+pub use params::InputValue;
 
 pub(super) struct EventsPlugin;
 

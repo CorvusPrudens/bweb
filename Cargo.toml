@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["router"]
-router = ["web-sys/History", "web-sys/Url"]
+router = ["web-sys/History", "web-sys/Url", "web-sys/UrlSearchParams"]
 reflect = ["dep:bevy_reflect", "bevy_ecs/bevy_reflect"]
 debug = []
 
