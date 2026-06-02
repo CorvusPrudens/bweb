@@ -1,5 +1,5 @@
 use super::HtmlElementName;
-use bevy_ecs::prelude::*;
+use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
 
 // Main Root
 #[derive(Default, Component, Clone, PartialEq, Eq)]
@@ -531,15 +531,50 @@ pub struct TextArea;
 
 #[derive(Default, Component, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "debug", derive(Debug))]
-#[require(HtmlElementName("h1"))]
-pub struct H1;
+#[component(on_insert = Self::insert)]
+pub enum Heading {
+    #[default]
+    H1,
+    H2,
+    H3,
+    H4,
+    H5,
+    H6,
+}
 
-#[derive(Default, Component, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "debug", derive(Debug))]
-#[require(HtmlElementName("h2"))]
-pub struct H2;
+impl Heading {
+    fn insert(mut world: DeferredWorld, ctx: HookContext) {
+        if let Some(value) = world.get::<Self>(ctx.entity).cloned() {
+            world
+                .commands()
+                .entity(ctx.entity)
+                .insert(HtmlElementName(value.element_name()));
+        }
+    }
 
-#[derive(Default, Component, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "debug", derive(Debug))]
-#[require(HtmlElementName("h3"))]
-pub struct H3;
+    fn element_name(&self) -> &'static str {
+        match self {
+            Self::H1 => "h1",
+            Self::H2 => "h2",
+            Self::H3 => "h3",
+            Self::H4 => "h4",
+            Self::H5 => "h5",
+            Self::H6 => "h6",
+        }
+    }
+}
+
+// #[derive(Default, Component, Clone, PartialEq, Eq)]
+// #[cfg_attr(feature = "debug", derive(Debug))]
+// #[require(HtmlElementName("h1"))]
+// pub struct H1;
+
+// #[derive(Default, Component, Clone, PartialEq, Eq)]
+// #[cfg_attr(feature = "debug", derive(Debug))]
+// #[require(HtmlElementName("h2"))]
+// pub struct H2;
+
+// #[derive(Default, Component, Clone, PartialEq, Eq)]
+// #[cfg_attr(feature = "debug", derive(Debug))]
+// #[require(HtmlElementName("h3"))]
+// pub struct H3;

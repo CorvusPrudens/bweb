@@ -166,6 +166,7 @@ pub enum ReactScheduleSystems {
 }
 
 pub trait SignalExt {
+    #[must_use]
     fn query<D>(
         &mut self,
         target: impl Into<target::EntityTarget>,
@@ -183,12 +184,14 @@ pub trait SignalExt {
         })
     }
 
+    #[must_use]
     fn derive<S, O, M>(&mut self, system: S) -> signal::DerivedSignal<O>
     where
         S: IntoSystem<(), O, M> + Send + Sync + 'static,
         S::System: ReadOnlySystem,
         O: Clone + Send + Sync + 'static;
 
+    #[must_use]
     fn memo<S, O, M>(&mut self, system: S) -> signal::DerivedSignal<O>
     where
         S: IntoSystem<(), O, M> + Send + Sync + 'static,
@@ -197,11 +200,13 @@ pub trait SignalExt {
 
     fn has<C: Component>(&mut self, target: Entity) -> prelude::ReadSignal<bool>;
 
+    #[must_use]
     fn effect<S, M>(&mut self, system: S) -> effect::Effect
     where
         S: IntoSystem<(), (), M> + Send + Sync + 'static,
         M: 'static;
 
+    #[must_use]
     fn derive_list<S1, M1, F, I, K, S2, O2, M2, R>(
         &mut self,
         it: S1,

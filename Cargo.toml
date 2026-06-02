@@ -46,6 +46,7 @@ features = [
     "DomRect",
     "HtmlElement",
     "HtmlInputElement",
+    "HtmlTextAreaElement",
     "WheelEvent",
     "HtmlHeadElement",
     "CssStyleDeclaration",
