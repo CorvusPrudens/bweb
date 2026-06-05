@@ -30,6 +30,7 @@ impl Plugin for HtmlPlugin {
                     update_text,
                     inject_element,
                     inject_input_element,
+                    inject_select_element,
                     inject_text_area_element,
                     inject_text,
                 )
@@ -136,6 +137,7 @@ fn initialize_window(mut commands: Commands) -> Result {
 
 web_wrapper!(HtmlElement);
 web_wrapper!(HtmlInputElement);
+web_wrapper!(HtmlSelectElement);
 web_wrapper!(HtmlTextAreaElement);
 web_wrapper!(Element);
 web_wrapper!(EventTarget);
@@ -224,7 +226,25 @@ fn inject_element(
 }
 
 fn inject_input_element(
-    elements: Query<(Entity, &HtmlElement), (With<elements::Input>, Without<HtmlInputElement>)>,
+    elements: Query<(Entity, &HtmlElement), (With<elements::Select>, Without<HtmlInputElement>)>,
+    mut commands: Commands,
+) -> Result {
+    for (entity, element) in &elements {
+        let input_element = element
+            .0
+            .dyn_ref::<web_sys::HtmlSelectElement>()
+            .ok_or("Expected `HtmlSelectElement`")?;
+
+        commands
+            .entity(entity)
+            .insert(HtmlSelectElement(SendWrapper::new(input_element.clone())));
+    }
+
+    Ok(())
+}
+
+fn inject_select_element(
+    elements: Query<(Entity, &HtmlElement), (With<elements::Input>, Without<HtmlSelectElement>)>,
     mut commands: Commands,
 ) -> Result {
     for (entity, element) in &elements {
