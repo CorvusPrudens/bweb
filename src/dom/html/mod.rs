@@ -9,7 +9,6 @@ use wasm_bindgen::JsCast;
 pub mod elements;
 mod inner_html;
 mod node_lookup;
-pub mod properties;
 pub mod svg;
 
 pub use inner_html::InnerHtml;
@@ -19,29 +18,25 @@ pub(super) struct HtmlPlugin;
 
 impl Plugin for HtmlPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((
-            svg::SvgPlugin,
-            InnerHtml::plugin,
-            properties::PropertyPlugin,
-        ))
-        .init_resource::<node_lookup::NodeEntityMap>()
-        .add_systems(
-            PreStartup,
-            initialize_window.in_set(DomStartupSystems::Window),
-        )
-        .add_systems(
-            PostUpdate,
-            (
-                update_text,
-                inject_element,
-                inject_input_element,
-                inject_text_area_element,
-                inject_text,
+        app.add_plugins((svg::SvgPlugin, InnerHtml::plugin))
+            .init_resource::<node_lookup::NodeEntityMap>()
+            .add_systems(
+                PreStartup,
+                initialize_window.in_set(DomStartupSystems::Window),
             )
-                .chain()
-                .in_set(DomSystems::Insert),
-        )
-        .add_stop_observer(remove_text);
+            .add_systems(
+                PostUpdate,
+                (
+                    update_text,
+                    inject_element,
+                    inject_input_element,
+                    inject_text_area_element,
+                    inject_text,
+                )
+                    .chain()
+                    .in_set(DomSystems::Insert),
+            )
+            .add_stop_observer(remove_text);
     }
 }
 

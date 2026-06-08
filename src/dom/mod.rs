@@ -6,6 +6,7 @@ pub mod attr;
 pub mod class;
 pub mod events;
 pub mod html;
+pub mod prop;
 
 #[derive(Default)]
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -18,6 +19,7 @@ impl Plugin for DomPlugin {
             class::ClassPlugin,
             html::HtmlPlugin,
             attr::AttributePlugin,
+            prop::PropPlugin,
         ))
         .configure_sets(
             PreStartup,
@@ -155,6 +157,7 @@ pub mod prelude {
     pub use super::class::*;
     pub use super::events::*;
     pub use super::html::NodeLookup;
-    pub use super::html::{elements::*, properties::*, svg::*, *};
+    pub use super::html::{elements::*, svg::*, *};
+    pub use super::prop;
     pub use crate::{class, classes, events};
 }
