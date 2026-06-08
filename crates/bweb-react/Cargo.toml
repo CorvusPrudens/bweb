@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["web"]
+web = ["dep:bweb"]
 dev = []
 
 [dependencies]
@@ -17,6 +19,7 @@ bevy_query_observer = { path = "../../../bevy_query_observer" }
 log = "0.4"
 variadics_please = "1.1.0"
 uuid = { version = "1.18", default-features = false, features = ["v4"] }
+bweb = { path = "../../", optional = true, default-features = false }
 
 [dev-dependencies]
 bevy_utils = { version = "0.18.0", default-features = false, features = [

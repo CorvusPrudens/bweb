@@ -92,6 +92,7 @@ fn detect_changes(
 
 fn evaluate(world: &mut World) -> Result {
     world.resource_scope::<EffectEvaluations, _>(|world, evals| -> Result {
+        let mut errors = Vec::new();
         let mut reactions = 0;
         for eval in evals.0.lock().unwrap().drain(..) {
             let Some(&EffectState { system }) = world.get::<EffectState>(eval) else {
@@ -102,16 +103,39 @@ fn evaluate(world: &mut World) -> Result {
             };
 
             set.clear();
-            reactive_observer::SignalObserver::observe(&set, || world.run_system(system))?;
+            if let Err(e) = reactive_observer::SignalObserver::observe(&set, || world.run_system(system)) {
+                errors.push(e);
+            }
 
             reactions += 1;
         }
 
         world.resource_mut::<Reactions>().count += reactions;
 
-        Ok(())
+        render_errors("failed to evaluate all reactions", errors)
     })
 }
 
 #[derive(Resource, Default)]
 struct EffectEvaluations(Mutex<Vec<Entity>>);
+
+fn render_errors<
+    I: IntoIterator<Item: core::fmt::Display, IntoIter: ExactSizeIterator>,
+>(
+    message: impl core::fmt::Display,
+    error_collection: I,
+) -> bevy_ecs::error::Result {
+    use core::fmt::Write;
+    let iterator = error_collection.into_iter();
+
+    if iterator.len() == 0 {
+        Ok(())
+    } else {
+        let mut string = String::new();
+        for error in iterator {
+            writeln!(&mut string, "{error}").unwrap();
+        }
+
+        Err(format!("{message}: {string}").into())
+    }
+}

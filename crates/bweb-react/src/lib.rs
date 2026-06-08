@@ -206,6 +206,18 @@ pub trait SignalExt {
         S: IntoSystem<(), (), M> + Send + Sync + 'static,
         M: 'static;
 
+    /// Derive a trailing-edge debounced view of `source`: the returned signal
+    /// adopts `source`'s latest value only after `source` has been quiet for
+    /// `delay`. Rapid bursts collapse into a single trailing update.
+    #[must_use]
+    fn debounce<T>(
+        &mut self,
+        source: signal::DerivedSignal<T>,
+        delay: core::time::Duration,
+    ) -> signal::DerivedSignal<T>
+    where
+        T: Clone + Default + Send + Sync + 'static;
+
     #[must_use]
     fn derive_list<S1, M1, F, I, K, S2, O2, M2, R>(
         &mut self,
@@ -287,6 +299,47 @@ impl SignalExt for Commands<'_, '_> {
         M: 'static,
     {
         effect::Effect::new(system, self.reborrow())
+    }
+
+    fn debounce<T>(
+        &mut self,
+        source: signal::DerivedSignal<T>,
+        delay: core::time::Duration,
+    ) -> signal::DerivedSignal<T>
+    where
+        T: Clone + Default + Send + Sync + 'static,
+    {
+        #[cfg(feature = "web")]
+        {
+            use bevy_platform::sync::{Arc, atomic::{AtomicU32, Ordering}};
+            use crate::prelude::*;
+
+            let (get, set) = crate::prelude::signal(T::default());
+            let derived = self.derive(move || get.get());
+
+            let epoch = Arc::new(AtomicU32::new(0));
+            let effect = self.effect(move || {
+                let value = source.get();
+                let generation = epoch.fetch_add(1, Ordering::Relaxed) + 1;
+                let (epoch, write, value) = (epoch.clone(), set.clone(), value.clone());
+
+                let set = set.clone();
+                bweb::task::spawn_local(async move |mut world: bweb::prelude::TaskWorld| {
+                    bweb::time::sleep(delay).await;
+                    if epoch.load(Ordering::Relaxed) == generation {
+                        world.with(|_| set.set(value));
+                    }
+                });
+            });
+
+            self.entity(derived.entity()).with_child(effect);
+
+            derived
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            todo!("Debounced signals are not implemented on this platform")
+        }
     }
 
     fn derive_list<S1, M1, F, I, K, S2, O2, M2, R>(

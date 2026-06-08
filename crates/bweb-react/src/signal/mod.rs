@@ -199,6 +199,13 @@ impl<T: Clone + Bundle> DerivedSignal<T> {
         let value = any.downcast_ref::<T>().unwrap().clone();
         commands.reactive_cleanup::<T>().insert(value);
     }
+
+}
+
+impl<T> DerivedSignal<T> {
+    pub(crate) fn entity(&self) -> Entity {
+        self.entity
+    }
 }
 
 impl<T> bevy_ecs::component::Component for DerivedSignal<T>
