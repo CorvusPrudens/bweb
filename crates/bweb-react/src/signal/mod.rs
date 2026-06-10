@@ -432,7 +432,7 @@ impl<T: Send + Sync + 'static> DerivedSignal<T> {
             mapper: Arc::new(move |any: &dyn Any, mut entity: EntityCommands| {
                 let value = any.downcast_ref().unwrap();
                 let output = mapper(value);
-                entity.insert(output);
+                entity.reactive_cleanup::<O>().insert(output);
             }),
             output: PhantomData,
         }
