@@ -7,6 +7,7 @@ pub mod class;
 pub mod events;
 pub mod html;
 pub mod prop;
+pub mod util;
 
 #[derive(Default)]
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -20,6 +21,7 @@ impl Plugin for DomPlugin {
             html::HtmlPlugin,
             attr::AttributePlugin,
             prop::PropPlugin,
+            util::UtilsPlugin,
         ))
         .configure_sets(
             PreStartup,
@@ -159,5 +161,6 @@ pub mod prelude {
     pub use super::html::NodeLookup;
     pub use super::html::{elements::*, svg::*, *};
     pub use super::prop;
+    pub use super::util::*;
     pub use crate::{class, classes, events};
 }

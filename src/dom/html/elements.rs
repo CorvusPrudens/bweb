@@ -31,12 +31,12 @@ pub struct Meta;
 #[derive(Default, Component, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "debug", derive(Debug))]
 #[require(HtmlElementName("style"))]
-pub struct StyleElement;
+pub struct Style;
 
 #[derive(Default, Component, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "debug", derive(Debug))]
 #[require(HtmlElementName("title"))]
-pub struct TitleElement;
+pub struct Title;
 
 // Sectioning root
 #[derive(Default, Component, Clone, PartialEq, Eq)]
