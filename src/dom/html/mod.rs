@@ -193,7 +193,14 @@ pub struct HtmlElementName(pub &'static str);
 impl HtmlElementName {
     fn on_replace_hook(mut world: DeferredWorld, context: HookContext) {
         if let Ok(mut entity) = world.commands().get_entity(context.entity) {
-            entity.try_remove::<(Node, EventTarget, HtmlElement, Element)>();
+            entity.try_remove::<(
+                Node,
+                EventTarget,
+                HtmlElement,
+                Element,
+                HtmlInputElement,
+                HtmlTextAreaElement,
+            )>();
         }
     }
 }
@@ -259,6 +266,7 @@ fn inject_text_area_element(
 #[cfg_attr(feature = "debug", derive(Debug))]
 #[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
 #[cfg_attr(feature = "reflect", reflect(Component))]
+// #[component(on_remove = Self::remove)]
 pub struct Text(Cow<'static, str>);
 
 impl core::ops::Deref for Text {
@@ -273,6 +281,12 @@ impl Text {
     pub fn new(text: impl Into<Cow<'static, str>>) -> Self {
         Self(text.into())
     }
+
+    // fn remove(mut world: DeferredWorld, context: HookContext) {
+    //     if let Ok(mut entity) = world.commands().get_entity(context.entity) {
+    //         entity.try_remove::<Node>();
+    //     }
+    // }
 }
 
 fn inject_text(

@@ -19,7 +19,7 @@ impl<B: Bundle> IntoAnyBundle for B {
             })),
             cleanup: |mut entity| {
                 entity.reactive_cleanup::<B>();
-                entity.remove::<B>();
+                entity.remove_with_requires::<B>();
             },
         }
     }
