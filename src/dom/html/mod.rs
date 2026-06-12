@@ -226,25 +226,7 @@ fn inject_element(
 }
 
 fn inject_input_element(
-    elements: Query<(Entity, &HtmlElement), (With<elements::Select>, Without<HtmlInputElement>)>,
-    mut commands: Commands,
-) -> Result {
-    for (entity, element) in &elements {
-        let input_element = element
-            .0
-            .dyn_ref::<web_sys::HtmlSelectElement>()
-            .ok_or("Expected `HtmlSelectElement`")?;
-
-        commands
-            .entity(entity)
-            .insert(HtmlSelectElement(SendWrapper::new(input_element.clone())));
-    }
-
-    Ok(())
-}
-
-fn inject_select_element(
-    elements: Query<(Entity, &HtmlElement), (With<elements::Input>, Without<HtmlSelectElement>)>,
+    elements: Query<(Entity, &HtmlElement), (With<elements::Input>, Without<HtmlInputElement>)>,
     mut commands: Commands,
 ) -> Result {
     for (entity, element) in &elements {
@@ -261,6 +243,24 @@ fn inject_select_element(
     Ok(())
 }
 
+fn inject_select_element(
+    elements: Query<(Entity, &HtmlElement), (With<elements::Select>, Without<HtmlSelectElement>)>,
+    mut commands: Commands,
+) -> Result {
+    for (entity, element) in &elements {
+        let select_element = element
+            .0
+            .dyn_ref::<web_sys::HtmlSelectElement>()
+            .ok_or("Expected `HtmlSelectElement`")?;
+
+        commands
+            .entity(entity)
+            .insert(HtmlSelectElement(SendWrapper::new(select_element.clone())));
+    }
+
+    Ok(())
+}
+
 fn inject_text_area_element(
     elements: Query<
         (Entity, &HtmlElement),
@@ -269,14 +269,16 @@ fn inject_text_area_element(
     mut commands: Commands,
 ) -> Result {
     for (entity, element) in &elements {
-        let input_element = element
+        let text_area_element = element
             .0
             .dyn_ref::<web_sys::HtmlTextAreaElement>()
-            .ok_or("Expected `HtmlInputElement`")?;
+            .ok_or("Expected `HtmlTextAreaElement`")?;
 
         commands
             .entity(entity)
-            .insert(HtmlTextAreaElement(SendWrapper::new(input_element.clone())));
+            .insert(HtmlTextAreaElement(SendWrapper::new(
+                text_area_element.clone(),
+            )));
     }
 
     Ok(())
