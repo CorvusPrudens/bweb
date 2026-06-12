@@ -492,6 +492,116 @@ mod test {
         assert_eq!(world.resource::<TestRes>().0, 2);
     }
 
+    #[derive(Resource, Clone)]
+    struct Items(Vec<u32>);
+
+    /// The container's children in `Children` order, as their item keys.
+    fn list_keys(world: &mut World, container: Entity) -> Vec<u32> {
+        world
+            .get::<Children>(container)
+            .map(|c| c.iter().collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|e| world.get::<TestData>(e).map(|d| d.0 as u32))
+            .collect()
+    }
+
+    fn items_app(initial: Vec<u32>) -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(ReactPlugin);
+        let world = app.world_mut();
+
+        world.insert_resource(Items(initial));
+
+        let mut commands = world.commands();
+        let list: ReactiveList = commands.derive_list(
+            |items: SRes<Items>| items.0.clone(),
+            |i| *i,
+            |key: In<u32>| TestData(key.0 as f32),
+        );
+        let container = commands.spawn(list).id();
+
+        app.update();
+        (app, container)
+    }
+
+    #[test]
+    fn test_reactive_list_reorders() {
+        let (mut app, container) = items_app(vec![1, 2, 3]);
+        let world = app.world_mut();
+        assert_eq!(list_keys(world, container), vec![1, 2, 3]);
+
+        let before: Vec<Entity> = world.get::<Children>(container).unwrap().iter().collect();
+
+        world.resource_mut::<Items>().0 = vec![3, 1, 2];
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(list_keys(world, container), vec![3, 1, 2]);
+
+        // A reorder moves the existing entities; it doesn't respawn them.
+        let mut after: Vec<Entity> = world.get::<Children>(container).unwrap().iter().collect();
+        let mut sorted_before = before;
+        sorted_before.sort();
+        after.sort();
+        assert_eq!(sorted_before, after);
+    }
+
+    #[test]
+    fn test_reactive_list_inserts_in_position() {
+        let (mut app, container) = items_app(vec![1, 4]);
+        let world = app.world_mut();
+        assert_eq!(list_keys(world, container), vec![1, 4]);
+
+        world.resource_mut::<Items>().0 = vec![1, 2, 3, 4];
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(list_keys(world, container), vec![1, 2, 3, 4]);
+
+        // Removal keeps the survivors' order.
+        world.resource_mut::<Items>().0 = vec![2, 4];
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(list_keys(world, container), vec![2, 4]);
+    }
+
+    #[test]
+    fn test_reactive_list_preserves_static_siblings() {
+        let mut app = App::new();
+        app.add_plugins(ReactPlugin);
+        let world = app.world_mut();
+
+        world.insert_resource(Items(vec![1, 2]));
+
+        let container = world.spawn_empty().id();
+        // A static child that isn't managed by the list.
+        let static_child = world.spawn((ChildOf(container), TestData(99.0))).id();
+
+        let mut commands = world.commands();
+        let list: ReactiveList = commands.derive_list(
+            |items: SRes<Items>| items.0.clone(),
+            |i| *i,
+            |key: In<u32>| TestData(key.0 as f32),
+        );
+        commands.entity(container).insert(list);
+
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(list_keys(world, container), vec![99, 1, 2]);
+
+        world.resource_mut::<Items>().0 = vec![2, 1];
+        app.update();
+        let world = app.world_mut();
+
+        assert_eq!(list_keys(world, container), vec![99, 2, 1]);
+        let first = world
+            .get::<Children>(container)
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap();
+        assert_eq!(first, static_child);
+    }
+
     #[test]
     fn test_reactive_list() {
         let mut app = App::new();

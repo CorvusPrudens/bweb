@@ -65,21 +65,22 @@ pub enum DomSystems {
 
 fn reparent(
     html: Query<Entity, With<html::elements::Html>>,
-    nodes: Query<(Ref<html::Node>, Option<&Children>)>,
+    nodes: Query<(Ref<html::Node>, Option<Ref<Children>>)>,
+    lookup: html::NodeLookup,
 ) -> Result {
     fn handle_children(
-        nodes: &Query<(Ref<html::Node>, Option<&Children>)>,
+        nodes: &Query<(Ref<html::Node>, Option<Ref<Children>>)>,
+        lookup: &html::NodeLookup,
         parent_entity: Entity,
     ) -> Result {
         let (node, children) = nodes.get(parent_entity)?;
-
-        // let mut child_iter = children.iter().flat_map(|c| c.iter()).peekable();
 
         let Some(children) = children else {
             return Ok(());
         };
 
-        let children = children.as_ref();
+        let children_changed = children.is_changed();
+        let children: &[Entity] = children.into_inner().as_ref();
         for (i, child_entity) in children.iter().enumerate() {
             let Ok((child_node, _)) = nodes.get(*child_entity) else {
                 continue;
@@ -87,7 +88,7 @@ fn reparent(
 
             if node.is_changed() {
                 node.append_child(&child_node).js_err()?;
-            } else if child_node.is_changed() {
+            } else if !children_changed && child_node.is_changed() {
                 // look for the next child (that we're aware of)
                 // that's a child of the parent node
                 let next = children[i + 1..].iter().find_map(|c| {
@@ -106,52 +107,116 @@ fn reparent(
                 }
             }
 
-            handle_children(nodes, *child_entity)?;
+            handle_children(nodes, lookup, *child_entity)?;
         }
 
-        // while let Some(child_entity) = child_iter.next() {
-        //     let Ok((child_node, _)) = nodes.get(child_entity) else {
-        //         continue;
-        //     };
-        //
-        //     if node.is_changed() {
-        //         node.append_child(&child_node).js_err()?;
-        //     } else if child_node.is_changed() {
-        //         match child_iter.peek().and_then(|c| nodes.get(*c).ok()) {
-        //             Some((next, _)) => {
-        //                 // if it fails,
-        //                 node.insert_before(&child_node, Some(&next)).js_err()?;
-        //             }
-        //             None => {
-        //                 node.append_child(&child_node).js_err()?;
-        //             }
-        //         }
-        //     }
-        //
-        //     handle_children(nodes, child_entity)?;
-        // }
-
-        // for child_entity in children.iter().flat_map(|c| c.iter()) {
-        //     let Ok((child_node, _)) = nodes.get(child_entity) else {
-        //         continue;
-        //     };
-        //
-        //     if node.is_changed() {
-        //         node.append_child(&child_node).js_err()?;
-        //     } else if child_node.is_changed() {
-        //         node.append_child(&child_node).js_err()?;
-        //     }
-        //
-        //     handle_children(nodes, child_entity)?;
-        // }
+        if children_changed && !node.is_changed() {
+            sync_child_order(node.into_inner(), children, nodes, lookup)?;
+        }
 
         Ok(())
     }
 
     let html = html.single()?;
-    handle_children(&nodes, html)?;
+    handle_children(&nodes, &lookup, html)?;
 
     Ok(())
+}
+
+/// Make the DOM order of `parent`'s entity-backed children match their
+/// `Children` order, attaching any that aren't in the DOM yet. Nodes on a
+/// longest increasing subsequence of the current order stay put, so the
+/// number of `insert_before` calls (each a remove+insert that drops focus
+/// and restarts animations on the moved node) is minimal. When the DOM
+/// already matches, this only reads sibling pointers.
+fn sync_child_order(
+    parent: &html::Node,
+    children: &[Entity],
+    nodes: &Query<(Ref<html::Node>, Option<Ref<Children>>)>,
+    lookup: &html::NodeLookup,
+) -> Result {
+    use bevy_platform::collections::{HashMap, HashSet};
+
+    // The desired order: entity children that have DOM nodes. Children
+    // whose nodes don't exist yet are picked up by a later run once
+    // injection inserts their `Node`.
+    let mut desired = Vec::with_capacity(children.len());
+    let mut desired_index = HashMap::with_capacity(children.len());
+    for child in children {
+        let Ok((child_node, _)) = nodes.get(*child) else {
+            continue;
+        };
+
+        desired_index.insert(*child, desired.len());
+        desired.push((**child_node).clone());
+    }
+
+    // The current order, as desired-indices of the parent's DOM children.
+    // Foreign nodes (not entity-backed, or not in `children`) are skipped;
+    // moves are anchored on managed nodes only, so they stay where they are.
+    let mut current = Vec::with_capacity(desired.len());
+    let mut dom_child = parent.first_child();
+    while let Some(node) = dom_child {
+        if let Some(index) = lookup.get(&node).and_then(|e| desired_index.get(&e)) {
+            current.push(*index);
+        }
+
+        dom_child = node.next_sibling();
+    }
+
+    let in_order = current.len() == desired.len() && current.is_sorted();
+    if in_order {
+        return Ok(());
+    }
+
+    let keep: HashSet<usize> = longest_increasing_subsequence(&current)
+        .into_iter()
+        .collect();
+
+    let mut anchor: Option<web_sys::Node> = None;
+    for (i, node) in desired.iter().enumerate().rev() {
+        if keep.contains(&i) {
+            anchor = Some(node.clone());
+            continue;
+        }
+
+        parent.insert_before(node, anchor.as_ref()).js_err()?;
+        anchor = Some(node.clone());
+    }
+
+    Ok(())
+}
+
+/// The values of one longest strictly increasing subsequence of `seq`.
+/// `seq` must not contain duplicates.
+fn longest_increasing_subsequence(seq: &[usize]) -> Vec<usize> {
+    // Patience sorting: `tails[k]` is the position in `seq` of the smallest
+    // value ending an increasing subsequence of length `k + 1`.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev: Vec<Option<usize>> = vec![None; seq.len()];
+
+    for (i, &value) in seq.iter().enumerate() {
+        let len = tails.partition_point(|&tail| seq[tail] < value);
+        if len > 0 {
+            prev[i] = Some(tails[len - 1]);
+        }
+
+        if len == tails.len() {
+            tails.push(i);
+        } else {
+            tails[len] = i;
+        }
+    }
+
+    let mut values = Vec::with_capacity(tails.len());
+    let mut position = tails.last().copied();
+    while let Some(i) = position {
+        values.push(seq[i]);
+        position = prev[i];
+    }
+
+    values.reverse();
+    values
 }
 
 pub mod prelude {
@@ -163,4 +228,34 @@ pub mod prelude {
     pub use super::prop;
     pub use super::util::*;
     pub use crate::{class, classes, events};
+}
+
+#[cfg(test)]
+mod test {
+    use super::longest_increasing_subsequence as lis;
+
+    #[test]
+    fn lis_basic() {
+        assert_eq!(lis(&[]), Vec::<usize>::new());
+        assert_eq!(lis(&[3]), vec![3]);
+        assert_eq!(lis(&[0, 1, 2, 3]), vec![0, 1, 2, 3]);
+        assert_eq!(lis(&[3, 2, 1, 0]).len(), 1);
+        assert_eq!(lis(&[2, 0, 1, 3]), vec![0, 1, 3]);
+        assert_eq!(lis(&[1, 2, 0, 3]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn lis_is_increasing_subsequence() {
+        let seq = [5, 0, 3, 1, 6, 2, 7, 4];
+        let result = lis(&seq);
+
+        assert!(result.is_sorted());
+        // Result is a subsequence: values appear in `seq` in the same order.
+        let mut remaining = seq.iter();
+        for value in &result {
+            assert!(remaining.any(|v| v == value));
+        }
+        // [0, 1, 2, 4] and [0, 1, 2, 7] etc. are the maxima here.
+        assert_eq!(result.len(), 4);
+    }
 }
