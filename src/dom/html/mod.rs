@@ -202,6 +202,7 @@ impl HtmlElementName {
                 Element,
                 HtmlInputElement,
                 HtmlTextAreaElement,
+                HtmlSelectElement,
             )>();
         }
     }
