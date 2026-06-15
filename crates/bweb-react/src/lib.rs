@@ -564,6 +564,41 @@ mod test {
         assert_eq!(list_keys(world, container), vec![2, 4]);
     }
 
+    #[derive(Resource, Clone)]
+    struct Pairs(Vec<(u32, u32)>);
+
+    #[test]
+    fn test_reactive_list_updates_retained_items() {
+        let mut app = App::new();
+        app.add_plugins(ReactPlugin);
+        let world = app.world_mut();
+
+        world.insert_resource(Pairs(vec![(1, 10), (2, 20)]));
+
+        let mut commands = world.commands();
+        let list: ReactiveList = commands.derive_list(
+            |items: SRes<Pairs>| items.0.clone(),
+            |(key, _)| *key,
+            |item: In<(u32, u32)>| TestData(item.0.1 as f32),
+        );
+        let container = commands.spawn(list).id();
+        app.update();
+
+        let world = app.world_mut();
+        assert_eq!(list_keys(world, container), vec![10, 20]);
+        let before: Vec<Entity> = world.get::<Children>(container).unwrap().iter().collect();
+
+        // A retained key whose item value changed re-runs the child on the
+        // existing entity instead of respawning it.
+        world.resource_mut::<Pairs>().0 = vec![(1, 11), (2, 20)];
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(list_keys(world, container), vec![11, 20]);
+
+        let after: Vec<Entity> = world.get::<Children>(container).unwrap().iter().collect();
+        assert_eq!(before, after, "updates must not respawn or reorder entities");
+    }
+
     #[test]
     fn test_reactive_list_preserves_static_siblings() {
         let mut app = App::new();
