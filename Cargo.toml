@@ -49,6 +49,7 @@ features = [
     "HtmlTextAreaElement",
     "WheelEvent",
     "HtmlHeadElement",
+    "HtmlSelectElement",
     "CssStyleDeclaration",
     "Document",
     "HtmlDocument",
