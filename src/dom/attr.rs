@@ -18,7 +18,12 @@ impl Plugin for AttributePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Data::plugin);
         app.add_plugins(Download::plugin);
-        app.add_systems(PostUpdate, update_attributes.in_set(DomSystems::Attach));
+        app.add_systems(
+            PostUpdate,
+            update_attributes
+                .before(DomSystems::Reparent)
+                .after(DomSystems::Insert),
+        );
     }
 }
 
@@ -275,6 +280,8 @@ boolean_attribute! {Required, "required"}
 boolean_attribute! {Reversed, "reversed"}
 boolean_attribute! {Sandbox, "sandbox"}
 boolean_attribute! {Selected, "selected"}
+boolean_attribute! {AllowFullScreen, "allowfullscreen"}
+boolean_attribute! {Credentialless, "credentialless"}
 
 macro_rules! enum_attribute {
     ($ty:ident, $attr:literal, $($var:ident, $value:literal),*) => {
