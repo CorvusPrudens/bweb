@@ -258,6 +258,7 @@ pub mod ev {
     handler! { pop_state, "popstate", web_sys::PopStateEvent }
     handler! { select_start, "selectstart", web_sys::Event }
     handler! { key_down, "keydown", web_sys::KeyboardEvent }
+    handler! { focus, "focus", web_sys::FocusEvent }
     handler! { blur, "blur", web_sys::FocusEvent }
     handler! { input, "input", web_sys::InputEvent }
     handler! { change, "change", web_sys::Event }
