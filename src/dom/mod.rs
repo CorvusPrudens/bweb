@@ -39,8 +39,90 @@ impl Plugin for DomPlugin {
                 DomSystems::Attach.after(DomSystems::Reparent),
             ),
         )
-        .add_systems(PostUpdate, (reparent.in_set(DomSystems::Reparent),));
+        .add_systems(
+            PostUpdate,
+            reparent_incremental.in_set(DomSystems::Reparent),
+        );
     }
+}
+
+fn reparent_incremental(
+    changed_nodes: Query<(Entity, &html::Node, Option<Ref<Children>>), Changed<html::Node>>,
+    changed_children: Query<(Ref<html::Node>, &Children), Changed<Children>>,
+    nodes: Query<(Ref<html::Node>, Option<Ref<Children>>)>,
+    parents: Query<&ChildOf>,
+    lookup: html::NodeLookup,
+) -> Result {
+    for (entity, node, children) in &changed_nodes {
+        // Attach every child onto this fresh node, in `Children`
+        // order. A child whose own node isn't created yet is skipped here and
+        // picked up lower down.
+        if let Some(children) = children {
+            let children: &[Entity] = children.into_inner().as_ref();
+            for &child in children {
+                if let Ok((child_node, _)) = nodes.get(child) {
+                    node.append_child(&child_node).js_err()?;
+                }
+            }
+        }
+
+        // Splice this fresh node into its parent unless the parent
+        // will place it itself.
+        let Ok(child_of) = parents.get(entity) else {
+            continue;
+        };
+
+        let Ok((parent_node, parent_children)) = nodes.get(child_of.0) else {
+            continue;
+        };
+
+        if parent_node.is_changed() {
+            continue;
+        }
+
+        let parent_children = match parent_children {
+            Some(c) if !c.is_changed() => c,
+            // The parent's `Children` changed -- `sync_child_order`
+            // will handle this.
+            _ => continue,
+        };
+
+        // The next sibling, in `Children` order, that is already in the DOM --
+        // the anchor to insert before. Because this is re-read live against the
+        // current DOM, the result is independent of the order in which sibling
+        // nodes are processed this tick.
+        let parent_children: &[Entity] = parent_children.into_inner().as_ref();
+        let next = parent_children
+            .iter()
+            .skip_while(|c| **c != entity)
+            .skip(1)
+            .find_map(|c| {
+                let (sibling, _) = nodes.get(*c).ok()?;
+                parent_node
+                    .contains(Some(&sibling))
+                    .then(|| (**sibling).clone())
+            });
+
+        match next {
+            Some(next) => {
+                parent_node.insert_before(node, Some(&next)).js_err()?;
+            }
+            None => {
+                parent_node.append_child(node).js_err()?;
+            }
+        }
+    }
+
+    // A parent's `Children` changed but its `Node` did not -- reconcile
+    // DOM order (and attach any children that weren't in the DOM yet).
+    for (node, children) in &changed_children {
+        if node.is_changed() {
+            continue;
+        }
+        sync_child_order(node.into_inner(), children.as_ref(), &nodes, &lookup)?;
+    }
+
+    Ok(())
 }
 
 #[derive(SystemSet, Clone, PartialEq, Eq, Debug, Hash)]
@@ -63,6 +145,8 @@ pub enum DomSystems {
     Attach,
 }
 
+// TODO: remove when deemed unnecessary
+#[allow(dead_code)]
 fn reparent(
     html: Query<Entity, With<html::elements::Html>>,
     nodes: Query<(Ref<html::Node>, Option<Ref<Children>>)>,
