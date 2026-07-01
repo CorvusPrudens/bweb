@@ -18,6 +18,7 @@ pub mod effect;
 pub mod list;
 pub mod optional;
 pub mod signal;
+pub mod signal2;
 pub mod target;
 
 pub struct ReactPlugin;
@@ -311,8 +312,11 @@ impl SignalExt for Commands<'_, '_> {
     {
         #[cfg(feature = "web")]
         {
-            use bevy_platform::sync::{Arc, atomic::{AtomicU32, Ordering}};
             use crate::prelude::*;
+            use bevy_platform::sync::{
+                Arc,
+                atomic::{AtomicU32, Ordering},
+            };
 
             let (get, set) = crate::prelude::signal(T::default());
             let derived = self.derive(move || get.get());
@@ -596,7 +600,10 @@ mod test {
         assert_eq!(list_keys(world, container), vec![11, 20]);
 
         let after: Vec<Entity> = world.get::<Children>(container).unwrap().iter().collect();
-        assert_eq!(before, after, "updates must not respawn or reorder entities");
+        assert_eq!(
+            before, after,
+            "updates must not respawn or reorder entities"
+        );
     }
 
     #[test]
