@@ -42,6 +42,12 @@ impl SignalGc {
     }
 }
 
+/// Number of live signal2 reactive nodes (every readable node carries a
+/// [`SignalGc`]). Diagnostic; see [`crate::reactive_node_counts`].
+pub(crate) fn live_node_count(world: &mut World) -> usize {
+    world.query::<&SignalGc>().iter(world).count()
+}
+
 /// How long [`gc_pass`] waits between sweeps. Defaults to one second; tests set
 /// `Duration::ZERO` to force a sweep every frame.
 #[derive(Resource)]
@@ -70,9 +76,22 @@ pub(super) fn gc_pass(
     }
     *last_sweep = Some(now);
 
+    #[cfg(feature = "dev")]
+    let mut collecting = 0usize;
+
     for (node, gc) in &nodes {
         if Arc::strong_count(&gc.probe) <= gc.rest {
+            #[cfg(feature = "dev")]
+            {
+                collecting += 1;
+            }
             commands.queue(move |world: &mut World| despawn_node(world, node));
         }
     }
+
+    #[cfg(feature = "dev")]
+    log::debug!(
+        "signal2 census: {} live node(s), collecting {collecting}",
+        nodes.iter().len(),
+    );
 }

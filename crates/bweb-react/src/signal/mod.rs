@@ -721,6 +721,12 @@ where
     }
 }
 
+/// Number of live old-framework reactive nodes (every signal node carries a
+/// [`SignalGc`]). Diagnostic; see [`crate::reactive_node_counts`].
+pub(crate) fn live_node_count(world: &mut World) -> usize {
+    world.query::<&SignalGc>().iter(world).count()
+}
+
 fn gc_pass(
     signals: Query<(Entity, &SignalGc)>,
     frequency: Res<SweepFrequency>,
@@ -737,14 +743,20 @@ fn gc_pass(
     };
 
     if now.duration_since(last) >= frequency.0 {
-        log::debug!("Total signals: {}", signals.iter().len());
         *last_sweep = Some(now);
 
+        let mut collecting = 0usize;
         for (entity, signal) in &signals {
             if Arc::strong_count(&signal.signal) <= signal.rest_strong_count {
+                collecting += 1;
                 commands.entity(entity).despawn();
             }
         }
+
+        log::debug!(
+            "old census: {} live node(s), collecting {collecting}",
+            signals.iter().len(),
+        );
     }
 }
 

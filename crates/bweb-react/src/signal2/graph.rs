@@ -26,6 +26,18 @@ pub(crate) struct PendingDirty(pub(crate) Vec<Entity>);
 #[derive(Resource, Default)]
 pub(crate) struct ChangedNodes(pub(crate) HashSet<Entity>);
 
+/// Diagnostics for the last [`flush`], published under the `dev` feature so
+/// [`run_react_schedule`](super::run_react_schedule) can report how much work a
+/// frame's propagation took.
+#[cfg(feature = "dev")]
+#[derive(Resource, Default)]
+pub(crate) struct FlushMetrics {
+    /// Number of fixpoint passes that actually settled the graph last flush. A
+    /// well-formed graph settles in one; more means a sink tripped an input
+    /// (or a mid-flush rewire) and forced another round.
+    pub(crate) passes: usize,
+}
+
 /// Scheduler status of a reactive node.
 ///
 /// - `Clean`: up to date.
@@ -86,6 +98,9 @@ const REACTION_LIMIT: usize = 16;
 /// topological order, then loop if a sink enqueued new work — up to
 /// [`REACTION_LIMIT`].
 pub(crate) fn flush(world: &mut World) {
+    #[cfg(feature = "dev")]
+    let mut passes = 0usize;
+
     for _ in 0..REACTION_LIMIT {
         // Start each pass from a clean change set: this discards marks left by
         // initial (non-flush) evaluations and by the previous pass, so every pass
@@ -99,6 +114,11 @@ pub(crate) fn flush(world: &mut World) {
             break;
         }
 
+        #[cfg(feature = "dev")]
+        {
+            passes += 1;
+        }
+
         // The inputs that fired have, by definition, changed.
         world.resource_mut::<ChangedNodes>().0.extend(inputs);
 
@@ -107,6 +127,11 @@ pub(crate) fn flush(world: &mut World) {
         if world.resource::<PendingDirty>().0.is_empty() {
             break;
         }
+    }
+
+    #[cfg(feature = "dev")]
+    if let Some(mut metrics) = world.get_resource_mut::<FlushMetrics>() {
+        metrics.passes = passes;
     }
 }
 

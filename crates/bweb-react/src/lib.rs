@@ -1,14 +1,16 @@
 use bevy_app::prelude::*;
 use bevy_ecs::{
-    change_detection::MaybeLocation,
     prelude::*,
     query::{QueryData, ROQueryItem, ReadOnlyQueryData},
     relationship::Relationship,
     schedule::ScheduleLabel,
 };
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "dev")]
 use bevy_platform::collections::HashSet;
+
+#[cfg(feature = "dev")]
+use bevy_ecs::change_detection::MaybeLocation;
 
 use crate::prelude::SQuery;
 
@@ -40,6 +42,7 @@ impl Plugin for ReactPlugin {
             )
             .add_plugins((
                 signal::SignalPlugin,
+                signal2::Signal2Plugin,
                 target::TargetPlugin,
                 cleanup::CleanupPlugin,
                 effect::EffectPlugin,
@@ -56,7 +59,7 @@ impl Plugin for ReactPlugin {
 pub struct Reactions {
     reaction_limit: usize,
     count: usize,
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "dev")]
     locations: HashSet<MaybeLocation>,
 }
 
@@ -71,27 +74,29 @@ impl Reactions {
         Self {
             reaction_limit,
             count: 0,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "dev")]
             locations: Default::default(),
         }
     }
 
-    #[cfg_attr(debug_assertions, track_caller)]
+    #[cfg_attr(feature = "dev", track_caller)]
     pub fn increment(&mut self) {
         self.count += 1;
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "dev")]
         self.locations.insert(MaybeLocation::caller());
     }
 
     fn clear(&mut self) {
         self.count = 0;
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "dev")]
         self.locations.clear();
     }
 }
 
 fn evaluate_reactions(world: &mut World) {
     world.schedule_scope(ReactSchedule, |world, schedule| {
+        #[cfg(feature = "dev")]
+        let start = bevy_platform::time::Instant::now();
         let mut total = 0;
         let reaction_limit = world.resource::<Reactions>().reaction_limit;
 
@@ -128,6 +133,9 @@ fn evaluate_reactions(world: &mut World) {
         #[cfg(feature = "dev")]
         {
             if !matches!(report.counts.as_slice(), &[0]) {
+                let elapsed = start.elapsed();
+                log::debug!("old ReactSchedule settled in {elapsed:?} over {total} pass(es)");
+
                 let mut locations = report
                     .locations
                     .iter()
@@ -149,6 +157,18 @@ fn evaluate_reactions(world: &mut World) {
             log::warn!("Reached reactive evaluation limit");
         }
     });
+}
+
+/// Live reactive-node counts as `(old_framework, signal2)`. Every readable node
+/// in either framework carries a `SignalGc`, so this is the live-node census used
+/// to track the push-reactivity migration: as object reactivity moves off the old
+/// `signal/` stack onto `signal2`, the first count should fall and the second rise.
+/// Cheap enough for tests and `dev` diagnostics; not intended for hot paths.
+pub fn reactive_node_counts(world: &mut World) -> (usize, usize) {
+    (
+        signal::live_node_count(world),
+        signal2::live_node_count(world),
+    )
 }
 
 #[derive(ScheduleLabel, PartialEq, Eq, Clone, Debug, Hash)]

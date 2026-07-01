@@ -1,4 +1,4 @@
-use super::{DomStartupSystems, DomSystems};
+use super::{DomChildren, DomParent, DomStartupSystems, DomSystems};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
@@ -146,6 +146,7 @@ web_wrapper!(SvgElement);
 #[derive(Component)]
 #[cfg_attr(feature = "debug", derive(Debug))]
 #[component(on_replace = Self::on_remove_hook, on_insert = Self::on_insert_hook)]
+#[require(DomChildren, DomParent)]
 pub struct Node(SendWrapper<web_sys::Node>);
 
 impl core::ops::Deref for Node {
@@ -163,9 +164,22 @@ impl AsRef<web_sys::Node> for Node {
 }
 
 impl Node {
-    fn on_remove_hook(world: DeferredWorld, context: HookContext) {
+    fn on_remove_hook(mut world: DeferredWorld, context: HookContext) {
         let element = world.get::<Node>(context.entity).unwrap();
         element.0.unchecked_ref::<web_sys::Element>().remove();
+
+        // Keep the DOM mirror exact: this node just left the DOM.
+        let parent = world
+            .get::<DomParent>(context.entity)
+            .and_then(|dom_parent| dom_parent.0);
+        if let Some(parent) = parent {
+            if let Some(mut siblings) = world.get_mut::<DomChildren>(parent) {
+                siblings.0.retain(|&sibling| sibling != context.entity);
+            }
+            if let Some(mut dom_parent) = world.get_mut::<DomParent>(context.entity) {
+                dom_parent.0 = None;
+            }
+        }
     }
 
     fn on_insert_hook(mut world: DeferredWorld, context: HookContext) {
@@ -334,13 +348,26 @@ fn update_text(texts: Query<(&Text, &Node), Changed<Text>>) {
     }
 }
 
-fn remove_text(text: Stop<(&Node, &ChildOf), With<Text>>, parent: Query<&Element>) -> Result {
-    let (text, child_of) = text.into_inner();
+fn remove_text(
+    text: Stop<(Entity, &Node, &ChildOf), With<Text>>,
+    parent: Query<&Element>,
+    mut mirror_children: Query<&mut DomChildren>,
+    mut mirror_parents: Query<&mut DomParent>,
+) -> Result {
+    let (entity, text, child_of) = text.into_inner();
     let Ok(parent) = parent.get(child_of.0) else {
         return Ok(());
     };
 
     parent.remove_child(text).js_err()?;
+
+    // Keep the DOM mirror exact: the text node just left the DOM.
+    if let Ok(mut siblings) = mirror_children.get_mut(child_of.0) {
+        siblings.0.retain(|&sibling| sibling != entity);
+    }
+    if let Ok(mut dom_parent) = mirror_parents.get_mut(entity) {
+        dom_parent.0 = None;
+    }
 
     Ok(())
 }

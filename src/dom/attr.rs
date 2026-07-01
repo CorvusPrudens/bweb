@@ -141,11 +141,14 @@ fn insert_hook<T: Component + Attribute>(mut world: DeferredWorld, context: Hook
 }
 
 fn update_attributes(
-    mut attributes: Query<(
-        &mut Attributes,
-        &Element,
-        EntityRefExcept<(Attributes, Element)>,
-    )>,
+    mut attributes: Query<
+        (
+            &mut Attributes,
+            &Element,
+            EntityRefExcept<(Attributes, Element)>,
+        ),
+        Changed<Attributes>,
+    >,
     ticks: SystemChangeTick,
 ) -> Result {
     for (mut attributes, element, entity) in &mut attributes {

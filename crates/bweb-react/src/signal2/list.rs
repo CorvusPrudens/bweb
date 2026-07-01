@@ -35,12 +35,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::cleanup::ReactiveCleanupExt;
 
-use super::error::{SignalError, SignalResult};
+use super::error::SignalResult;
 use super::graph::{despawn_node, spawn_effect};
-
-// ---------------------------------------------------------------------------
-// The component
-// ---------------------------------------------------------------------------
 
 /// Spawns the reconciliation sink once the host entity is known. Consumed on the
 /// first insert.
@@ -68,8 +64,8 @@ impl<R: Send + Sync + 'static> Component for ReactiveList<R> {
         fn hook<R: Send + Sync + 'static>(mut world: DeferredWorld, ctx: HookContext) {
             let host = ctx.entity;
             let builder = world
-                .get_mut::<ReactiveList<R>>(host)
-                .and_then(|mut c| c.builder.lock().unwrap().take());
+                .get::<ReactiveList<R>>(host)
+                .and_then(|c| c.builder.lock().unwrap().take());
             let Some(builder) = builder else {
                 return;
             };
@@ -102,10 +98,6 @@ impl<R: Send + Sync + 'static> Component for ReactiveList<R> {
         Some(hook::<R>)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Diff
-// ---------------------------------------------------------------------------
 
 /// Per-key reconciliation state: the last-seen key order and each key's entity +
 /// last value.
@@ -177,10 +169,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Constructor
-// ---------------------------------------------------------------------------
-
 /// The `reactive_list` constructors, added to `Commands`.
 pub trait ReactiveListExt {
     /// A keyed reactive list whose items are attached to the host as `ChildOf`
@@ -200,7 +188,7 @@ pub trait ReactiveListExt {
         B: Bundle + Send + Sync + 'static;
 
     /// Like [`reactive_list`](Self::reactive_list), but attaches items through an
-    /// arbitrary relationship `R` (turbofish it: `reactive_list_related::<_, _, _, _, _, _, MyRel>`).
+    /// arbitrary relationship `R`.
     fn reactive_list_related<F, I, K, KF, CF, B, R>(
         &mut self,
         items: F,
@@ -232,7 +220,7 @@ impl ReactiveListExt for Commands<'_, '_> {
         CF: Fn(&mut Commands, I) -> B + Send + Sync + 'static,
         B: Bundle + Send + Sync + 'static,
     {
-        build_reactive_list::<_, _, _, _, _, _, ChildOf>(self, items, key, child)
+        build_reactive_list(self, items, key, child)
     }
 
     fn reactive_list_related<F, I, K, KF, CF, B, R>(
@@ -250,7 +238,7 @@ impl ReactiveListExt for Commands<'_, '_> {
         B: Bundle + Send + Sync + 'static,
         R: Relationship,
     {
-        build_reactive_list::<_, _, _, _, _, _, R>(self, items, key, child)
+        build_reactive_list(self, items, key, child)
     }
 }
 
@@ -385,7 +373,3 @@ fn enforce_order<R: Relationship>(
         }
     }
 }
-
-// Silence unused-import warnings when `SignalError` is only referenced via the
-// `let Ok(..) else` above (it is the error half of `SignalResult`).
-const _: fn() -> SignalError = || SignalError::NotReady;

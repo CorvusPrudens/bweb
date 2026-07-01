@@ -1,6 +1,6 @@
 //! Change-scanning input sources for components that mutate *in place*.
 //!
-//! Query observers (the [`signal`](super::Signal::signal) input) only fire on
+//! Query observers (the [`signal`](super::SignalExt::signal) input) only fire on
 //! component lifecycle events. In-place `&mut` mutations — the common case for
 //! relationship collections like `Children` (add/remove a child among existing
 //! ones, or reorder) — bump a change tick but emit no lifecycle event, so an

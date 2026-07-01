@@ -1,5 +1,5 @@
-//! The signal constructors: the [`Signal`] extension trait on `Commands` and its
-//! shared node-registration helper.
+//! The signal constructors: the [`SignalExt`] extension trait on `Commands` and
+//! its shared node-registration helper.
 
 use bevy_ecs::{
     prelude::*,
@@ -23,7 +23,7 @@ use super::handle::{
 use super::reactive_context::ReactiveContext;
 
 /// Signal constructors, added to `Commands`.
-pub trait Signal {
+pub trait SignalExt {
     /// Creates an input signal driven by a query observer. Fires whenever the
     /// watched entity gains or changes the queried component(s). Watch a specific
     /// entity with [`ObserverSignal::watch_entity`] /
@@ -68,7 +68,7 @@ pub trait Signal {
         O: PartialEq + Clone + Send + Sync + 'static;
 }
 
-impl Signal for Commands<'_, '_> {
+impl SignalExt for Commands<'_, '_> {
     fn signal<S, D, F, M, O>(&mut self, system: S) -> ObserverSignal<O>
     where
         S: IntoSystem<Start<'static, 'static, D, F>, O, M> + Send + Sync + 'static,
@@ -199,8 +199,8 @@ impl Signal for Commands<'_, '_> {
     }
 }
 
-/// Node setup for the closure constructors ([`Signal::derive`] /
-/// [`Signal::memo`]): store the type-erased evaluator, insert the graph
+/// Node setup for the closure constructors ([`SignalExt::derive`] /
+/// [`SignalExt::memo`]): store the type-erased evaluator, insert the graph
 /// components, and queue the initial evaluation.
 fn register_closure<O>(
     commands: &mut Commands,
@@ -235,7 +235,7 @@ where
     }
 }
 
-/// Node setup for system-backed nodes ([`Signal::poll`], and future
+/// Node setup for system-backed nodes ([`SignalExt::poll`], and future
 /// `*_system` constructors): register the `piped` system, insert the graph
 /// components, and queue the initial evaluation. The `piped` system writes the
 /// value cell and marks [`ChangedNodes`] when it should propagate.

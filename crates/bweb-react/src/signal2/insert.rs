@@ -41,6 +41,34 @@ where
     })
 }
 
+/// Like [`spawn_map_sink`] but the mapper also receives the sink's `Commands`, so
+/// it can spawn child signals / entities while producing the bundle. Backs
+/// [`SignalMap::map_commands`].
+fn spawn_map_commands_sink<S, F, O2>(
+    commands: &mut Commands,
+    host: Entity,
+    source: S,
+    f: Arc<F>,
+) -> Entity
+where
+    S: SignalRead,
+    F: Fn(&mut Commands, &S::Value) -> O2 + Send + Sync + 'static,
+    O2: Bundle + Send + Sync + 'static,
+{
+    spawn_effect(commands, move |mut commands: Commands| {
+        match source.read() {
+            Ok(guard) => {
+                let bundle = f(&mut commands, &guard);
+                commands
+                    .entity(host)
+                    .reactive_cleanup::<O2>()
+                    .try_insert(bundle);
+            }
+            Err(SignalError::NotReady) => {}
+        }
+    })
+}
+
 type SpawnSink = Arc<dyn Fn(&mut Commands, Entity) -> Entity + Send + Sync>;
 
 /// A type-erased reactive insertion. Dropped onto a host entity it spawns a sink
@@ -108,6 +136,27 @@ pub trait SignalMap: SignalRead {
         ReactiveInsert {
             spawn: Arc::new(move |commands: &mut Commands, host: Entity| {
                 spawn_map_sink(commands, host, source.clone(), f.clone())
+            }),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Like [`map`](Self::map), but the mapper also receives `&mut Commands`, so it
+    /// can spawn child signals / entities while producing the bundle. This is the
+    /// signal2 equivalent of the old framework's `map_system` — use it for a
+    /// reactive branch that renders a subtree (e.g. building a nested list or
+    /// per-variant widget) rather than a plain value.
+    fn map_commands<F, O2>(&self, f: F) -> MappedSignal<O2>
+    where
+        Self: Sized,
+        F: Fn(&mut Commands, &Self::Value) -> O2 + Send + Sync + 'static,
+        O2: Bundle + Send + Sync + 'static,
+    {
+        let source = self.clone();
+        let f = Arc::new(f);
+        ReactiveInsert {
+            spawn: Arc::new(move |commands: &mut Commands, host: Entity| {
+                spawn_map_commands_sink(commands, host, source.clone(), f.clone())
             }),
             _marker: PhantomData,
         }

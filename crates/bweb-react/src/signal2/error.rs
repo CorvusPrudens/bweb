@@ -23,15 +23,31 @@ pub type SignalResult<O> = Result<O, SignalError>;
 
 /// A read guard over a signal's value.
 ///
-/// Holds the underlying `RwLock` read guard and dereferences straight to the
-/// value. Only constructed when the value is `Some`, and the read lock is held
-/// for the guard's lifetime, so the `unwrap` in `deref` cannot fail.
-pub struct SignalReadGuard<'a, O>(pub(super) RwLockReadGuard<'a, Option<O>>);
+/// Either holds a graph node's `RwLock` read guard (the common case) or borrows a
+/// constant directly ([`Signal::Static`](super::Signal)). Dereferences straight to
+/// the value; the `Locked` variant is only constructed when the value is `Some`,
+/// and the read lock is held for the guard's lifetime, so the `unwrap` in `deref`
+/// cannot fail.
+pub enum SignalReadGuard<'a, O> {
+    /// Value read from a graph node's `RwLock`-backed value cell.
+    Locked(RwLockReadGuard<'a, Option<O>>),
+    /// Value borrowed directly from a constant.
+    Borrowed(&'a O),
+}
 
 impl<O> Deref for SignalReadGuard<'_, O> {
     type Target = O;
 
     fn deref(&self) -> &O {
-        self.0.as_ref().expect("SignalReadGuard over a None value")
+        match self {
+            Self::Locked(guard) => guard.as_ref().expect("SignalReadGuard over a None value"),
+            Self::Borrowed(value) => value,
+        }
+    }
+}
+
+impl<O> AsRef<O> for SignalReadGuard<'_, O> {
+    fn as_ref(&self) -> &O {
+        self
     }
 }

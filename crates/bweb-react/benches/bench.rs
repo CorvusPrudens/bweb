@@ -42,7 +42,7 @@ mod v2 {
     use bevy_app::prelude::*;
     use bevy_ecs::{prelude::*, system::SystemId};
     use bevy_query_observer::Start;
-    use bweb_react::signal2::{DerivedSignal, ObserverSignal, Signal, Signal2Plugin, SignalRead};
+    use bweb_react::signal2::{ObserverSignal, Signal2Plugin, SignalExt, SignalRead};
 
     pub fn app() -> App {
         let mut app = App::new();

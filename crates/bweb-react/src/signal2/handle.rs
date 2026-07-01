@@ -53,7 +53,7 @@ pub(crate) fn read_value<O>(
     if guard.is_none() {
         return Err(SignalError::NotReady);
     }
-    Ok(SignalReadGuard(guard))
+    Ok(SignalReadGuard::Locked(guard))
 }
 
 /// A handle onto a `derive`/`memo` node's value.
@@ -80,7 +80,7 @@ impl<O: Send + Sync + 'static> SignalRead for DerivedSignal<O> {
 }
 
 /// Which entity an [`ObserverSignal`]'s query observer watches. Resolved once,
-/// during the deferred finalization queued by `Signal::signal`.
+/// during the deferred finalization queued by `SignalExt::signal`.
 pub(crate) enum WatchTarget {
     /// Watch every entity matching the query (the default).
     Global,
@@ -156,6 +156,57 @@ pub(crate) fn build_observer<O>(
 ) {
     if let Some(builder) = shared.builder.lock().unwrap().take() {
         builder(world, watched);
+    }
+}
+
+/// A unified signal source: a query-observer input, a derived value, or a
+/// constant. Implements [`SignalRead`] (and therefore, via the blanket impl,
+/// [`SignalMap`](super::SignalMap)), so any of the three can be read
+/// interchangeably wherever a signal is expected — e.g. as the value behind a
+/// widget. Construct via [`Signal::Static`] or `.into()` from a
+/// [`DerivedSignal`] / [`ObserverSignal`].
+pub enum Signal<O> {
+    /// A query-observer-driven input ([`ObserverSignal`]).
+    Signal(ObserverSignal<O>),
+    /// A derived / memoized / polled value ([`DerivedSignal`]).
+    Derived(DerivedSignal<O>),
+    /// A constant that never changes and registers no reactive dependency.
+    Static(O),
+}
+
+// Hand-written so the handle variants clone without `O: Clone`; only `Static`
+// needs it, and the enum as a whole requires it anyway to satisfy `SignalRead`.
+impl<O: Clone> Clone for Signal<O> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Signal(signal) => Self::Signal(signal.clone()),
+            Self::Derived(signal) => Self::Derived(signal.clone()),
+            Self::Static(value) => Self::Static(value.clone()),
+        }
+    }
+}
+
+impl<O: Clone + Send + Sync + 'static> SignalRead for Signal<O> {
+    type Value = O;
+
+    fn read(&self) -> SignalResult<SignalReadGuard<'_, O>> {
+        match self {
+            Self::Signal(signal) => signal.read(),
+            Self::Derived(signal) => signal.read(),
+            Self::Static(value) => Ok(SignalReadGuard::Borrowed(value)),
+        }
+    }
+}
+
+impl<O> From<ObserverSignal<O>> for Signal<O> {
+    fn from(signal: ObserverSignal<O>) -> Self {
+        Self::Signal(signal)
+    }
+}
+
+impl<O> From<DerivedSignal<O>> for Signal<O> {
+    fn from(signal: DerivedSignal<O>) -> Self {
+        Self::Derived(signal)
     }
 }
 

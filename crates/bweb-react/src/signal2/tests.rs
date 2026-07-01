@@ -807,3 +807,214 @@ fn gc_no_orphan_observer() {
     assert_eq!(counts[0], counts[1]);
     assert_eq!(counts[1], counts[2]);
 }
+
+// ---------------------------------------------------------------------------
+// Reactive list
+// ---------------------------------------------------------------------------
+
+#[derive(Resource, Clone)]
+struct Items(Vec<u32>);
+
+#[derive(Resource, Clone)]
+struct Pairs(Vec<(u32, u32)>);
+
+/// The host's children in order, mapped to their `Tag` values.
+fn list_keys(world: &mut World, host: Entity) -> Vec<u32> {
+    let children: Vec<Entity> = world
+        .get::<Children>(host)
+        .map(|c| c.iter().collect())
+        .unwrap_or_default();
+    children
+        .into_iter()
+        .filter_map(|e| world.get::<Tag>(e).map(|t| t.0))
+        .collect()
+}
+
+/// The host's child entity set (identity, order-independent) as a sorted `Vec`.
+fn child_entities(world: &mut World, host: Entity) -> Vec<Entity> {
+    let mut v: Vec<Entity> = world
+        .get::<Children>(host)
+        .map(|c| c.iter().collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+fn tag_count(world: &mut World) -> usize {
+    let mut q = world.query::<&Tag>();
+    q.iter(world).count()
+}
+
+/// Spawns a `Tag`-per-item list over the `Items` resource on `container`.
+fn spawn_items_list(app: &mut App, container: Entity) {
+    let world = app.world_mut();
+    let mut commands = world.commands();
+    let src = commands.poll(|it: Res<Items>| Ok(it.0.clone()));
+    let list = commands.reactive_list(
+        move || src.get(),
+        |n: &u32| *n,
+        |_c: &mut Commands, n: u32| Tag(n),
+    );
+    commands.entity(container).insert(list);
+}
+
+/// New keys spawn one child each, in order; growing the source adds children.
+#[test]
+fn list_spawns_and_grows() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+    app.insert_resource(Items(vec![1, 2]));
+
+    let container = app.world_mut().spawn_empty().id();
+    spawn_items_list(&mut app, container);
+
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![1, 2]);
+
+    app.world_mut().resource_mut::<Items>().0 = vec![1, 2, 3, 4];
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![1, 2, 3, 4]);
+}
+
+/// Reordering the source reorders the children without respawning them.
+#[test]
+fn list_reorders() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+    app.insert_resource(Items(vec![1, 2, 3]));
+
+    let container = app.world_mut().spawn_empty().id();
+    spawn_items_list(&mut app, container);
+
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![1, 2, 3]);
+    let before = child_entities(app.world_mut(), container);
+
+    app.world_mut().resource_mut::<Items>().0 = vec![3, 1, 2];
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![3, 1, 2]);
+    let after = child_entities(app.world_mut(), container);
+
+    assert_eq!(before, after, "reorder must not respawn entities");
+}
+
+/// Insertions land in position; removals preserve the survivors' order.
+#[test]
+fn list_inserts_in_position() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+    app.insert_resource(Items(vec![1, 4]));
+
+    let container = app.world_mut().spawn_empty().id();
+    spawn_items_list(&mut app, container);
+
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![1, 4]);
+
+    app.world_mut().resource_mut::<Items>().0 = vec![1, 2, 3, 4];
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![1, 2, 3, 4]);
+
+    app.world_mut().resource_mut::<Items>().0 = vec![2, 4];
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![2, 4]);
+}
+
+/// Removed items are despawned, not just detached.
+#[test]
+fn list_removes_and_despawns() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+    app.insert_resource(Items(vec![1, 2, 3]));
+
+    let container = app.world_mut().spawn_empty().id();
+    spawn_items_list(&mut app, container);
+
+    app.update();
+    assert_eq!(tag_count(app.world_mut()), 3);
+
+    app.world_mut().resource_mut::<Items>().0 = vec![1, 3];
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![1, 3]);
+    assert_eq!(tag_count(app.world_mut()), 2);
+}
+
+/// Static (non-list) siblings keep their position; list items splice after them and
+/// reorder among themselves.
+#[test]
+fn list_preserves_static_siblings() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+    app.insert_resource(Items(vec![1, 2]));
+
+    let container = app.world_mut().spawn_empty().id();
+    app.world_mut().spawn((Tag(99), ChildOf(container)));
+    spawn_items_list(&mut app, container);
+
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![99, 1, 2]);
+
+    app.world_mut().resource_mut::<Items>().0 = vec![2, 1];
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![99, 2, 1]);
+}
+
+/// A retained key whose *value* changed re-renders on the same entity — no respawn,
+/// no reorder. (This is the case v1's key-only diff missed.)
+#[test]
+fn list_updates_retained_items() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+    app.insert_resource(Pairs(vec![(1, 10), (2, 20)]));
+
+    let container = app.world_mut().spawn_empty().id();
+    {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let src = commands.poll(|p: Res<Pairs>| Ok(p.0.clone()));
+        let list = commands.reactive_list(
+            move || src.get(),
+            |pair: &(u32, u32)| pair.0,
+            |_c: &mut Commands, pair: (u32, u32)| Tag(pair.1),
+        );
+        commands.entity(container).insert(list);
+    }
+
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![10, 20]);
+    let before = child_entities(app.world_mut(), container);
+
+    // Same keys, first item's value 10 -> 11.
+    app.world_mut().resource_mut::<Pairs>().0 = vec![(1, 11), (2, 20)];
+    app.update();
+    assert_eq!(list_keys(app.world_mut(), container), vec![11, 20]);
+    let after = child_entities(app.world_mut(), container);
+
+    assert_eq!(
+        before, after,
+        "retained-key value updates must not respawn or reorder entities"
+    );
+}
+
+/// Despawning the host tears down every managed item and the reconciliation sink.
+#[test]
+fn list_teardown_on_host_despawn() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+    app.insert_resource(Items(vec![1, 2, 3]));
+
+    let container = app.world_mut().spawn_empty().id();
+    spawn_items_list(&mut app, container);
+
+    app.update();
+    assert_eq!(tag_count(app.world_mut()), 3);
+    // The `poll` source node and the list's reconciliation sink are both `SignalSystem`.
+    assert_eq!(signal_node_count(app.world_mut()), 2);
+
+    app.world_mut().despawn(container);
+    app.update();
+
+    // Items despawned, and the sink node collected (leaving only the poll node).
+    assert_eq!(tag_count(app.world_mut()), 0);
+    assert_eq!(signal_node_count(app.world_mut()), 1);
+}

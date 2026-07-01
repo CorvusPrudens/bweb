@@ -38,6 +38,18 @@ wasm-bindgen-futures = "0.4.50"
 # TODO: implement this manually
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# Lockstep with the pinned wasm-bindgen (0.3.x pairs with 0.2.(x+50)).
+wasm-bindgen-test = "=0.3.58"
+# Extra web-sys bindings only the DOM benchmark needs (timing + DOM inspection);
+# kept out of the production feature set above.
+web-sys = { version = "0.3.85", features = [
+    "Performance",
+    "console",
+    "Node",
+    "NodeList",
+] }
+
 [dependencies.web-sys]
 version = "0.3.85"
 features = [
