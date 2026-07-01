@@ -93,10 +93,6 @@ impl<K: Send + Sync + 'static> Component for ReactiveInsert<K> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// map
-// ---------------------------------------------------------------------------
-
 /// Reactively map a signal's value **by reference** into an insertable bundle.
 pub trait SignalMap: SignalRead {
     /// Maps this signal's value into a [`MappedSignal`] component: dropped onto an
@@ -119,10 +115,6 @@ pub trait SignalMap: SignalRead {
 }
 
 impl<S: SignalRead> SignalMap for S {}
-
-// ---------------------------------------------------------------------------
-// Signal handles as bundle-inserting components
-// ---------------------------------------------------------------------------
 
 /// Reactive-insertion `Component` for a signal handle whose value `O` is itself a
 /// bundle: dropped onto an entity, it keeps the entity's `O` in sync with the
@@ -166,10 +158,6 @@ where
     bind_sink::<O>(&mut commands, host, sink);
 }
 
-// ---------------------------------------------------------------------------
-// Sink lifetime tracking
-// ---------------------------------------------------------------------------
-
 /// Records the sink entity created for a reactive insertion of bundle `K` on a
 /// host, so it can be torn down when the insertion is replaced or the host is
 /// despawned.
@@ -207,10 +195,6 @@ fn unbind_sink<K: Send + Sync + 'static>(mut world: DeferredWorld, ctx: HookCont
         }
     });
 }
-
-// ---------------------------------------------------------------------------
-// option
-// ---------------------------------------------------------------------------
 
 /// Reactive insertion for `Option`-valued signals: inserts the inner bundle when
 /// `Some`, removes it when `None`, and leaves it untouched while `NotReady`.

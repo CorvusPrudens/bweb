@@ -22,10 +22,6 @@ pub(crate) struct SignalInner {
     pub(crate) entity: Entity,
 }
 
-// ---------------------------------------------------------------------------
-// Read API
-// ---------------------------------------------------------------------------
-
 /// Fallible read access shared by every signal handle.
 ///
 /// Reads register the signal as a source of whatever node is currently
@@ -47,7 +43,7 @@ pub trait SignalRead: Clone + Send + Sync + 'static {
 }
 
 /// Shared read implementation: register the source, then guard the value.
-fn read_value<O>(
+pub(crate) fn read_value<O>(
     entity: Entity,
     value: &RwLock<Option<O>>,
 ) -> SignalResult<SignalReadGuard<'_, O>> {
@@ -59,10 +55,6 @@ fn read_value<O>(
     }
     Ok(SignalReadGuard(guard))
 }
-
-// ---------------------------------------------------------------------------
-// DerivedSignal
-// ---------------------------------------------------------------------------
 
 /// A handle onto a `derive`/`memo` node's value.
 pub struct DerivedSignal<O> {
@@ -86,10 +78,6 @@ impl<O: Send + Sync + 'static> SignalRead for DerivedSignal<O> {
         read_value(self.inner.entity, &self.value)
     }
 }
-
-// ---------------------------------------------------------------------------
-// ObserverSignal + watch machinery
-// ---------------------------------------------------------------------------
 
 /// Which entity an [`ObserverSignal`]'s query observer watches. Resolved once,
 /// during the deferred finalization queued by `Signal::signal`.

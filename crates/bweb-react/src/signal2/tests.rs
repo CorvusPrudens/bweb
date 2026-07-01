@@ -391,3 +391,419 @@ fn watch_bundle_watches_host() {
     app.update();
     assert_eq!(count.get(), Ok(11));
 }
+
+/// Snapshots a parent's children as an owned `Vec` — the extractor most reactive
+/// lists want (absent `Children` reads as an empty list).
+fn child_list(c: Option<&Children>) -> Vec<Entity> {
+    c.map_or_else(Vec::new, |c| c.iter().collect::<Vec<Entity>>())
+}
+
+/// `track` sees in-place `Children` mutations that no query observer fires on:
+/// appending a child to a non-empty parent, and reordering.
+#[test]
+fn track_children_sees_add_and_reorder() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let parent = app.world_mut().spawn_empty().id();
+    let c1 = app.world_mut().spawn(ChildOf(parent)).id();
+
+    let children = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.track(child_list).watch_entity(parent)
+    };
+
+    app.update();
+    assert_eq!(children.get(), Ok(vec![c1]));
+
+    // Parent already has `Children`, so appending mutates it in place — no
+    // lifecycle event, invisible to an observer, caught by the scanner.
+    let c2 = app.world_mut().spawn(ChildOf(parent)).id();
+    app.update();
+    assert_eq!(children.get(), Ok(vec![c1, c2]));
+
+    // Reorder (move c1 to the end): also invisible to a `ChildOf` observer.
+    app.world_mut().entity_mut(parent).remove_children(&[c1]);
+    app.world_mut().entity_mut(parent).add_children(&[c1]);
+    app.update();
+    assert_eq!(children.get(), Ok(vec![c2, c1]));
+}
+
+/// When the last child leaves, bevy removes the `Children` component entirely —
+/// which `Changed<Children>` can't see; the `On<Remove, Children>` observer does.
+#[test]
+fn track_children_sees_empty_on_removal() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let parent = app.world_mut().spawn_empty().id();
+    let c1 = app.world_mut().spawn(ChildOf(parent)).id();
+
+    let children = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.track(child_list).watch_entity(parent)
+    };
+
+    app.update();
+    assert_eq!(children.get(), Ok(vec![c1]));
+
+    app.world_mut().entity_mut(c1).remove::<ChildOf>();
+    app.update();
+    assert_eq!(children.get(), Ok(vec![]));
+}
+
+/// A mutation is reflected through a downstream `derive` after a single update:
+/// the scanner (`Scan`) runs before the settle (`Settle`) in the same schedule.
+#[test]
+fn track_settles_same_frame() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let parent = app.world_mut().spawn_empty().id();
+    app.world_mut().spawn(ChildOf(parent));
+
+    let doubled = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let count = commands
+            .track(|c: Option<&Children>| c.map_or(0usize, |c| c.iter().count()))
+            .watch_entity(parent);
+        commands.derive(move || Ok(count.get()? * 2))
+    };
+
+    app.update();
+    assert_eq!(doubled.get(), Ok(2));
+
+    app.world_mut().spawn(ChildOf(parent));
+    app.update();
+    assert_eq!(doubled.get(), Ok(4));
+}
+
+/// With no `Children` change, the scanner still runs but pushes nothing, so the
+/// downstream node is never recomputed — idle cost is scan-only.
+#[test]
+fn track_idle_prunes() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let parent = app.world_mut().spawn_empty().id();
+    app.world_mut().spawn(ChildOf(parent));
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    let _downstream = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let children = commands.track(child_list).watch_entity(parent);
+        let runs = runs.clone();
+        commands.derive(move || {
+            runs.fetch_add(1, Ordering::Relaxed);
+            Ok(children.get()?.len())
+        })
+    };
+
+    // Let bind/seed and any first-run scan settle, then take a baseline.
+    app.update();
+    app.update();
+    let baseline = runs.load(Ordering::Relaxed);
+
+    app.update();
+    app.update();
+    assert_eq!(runs.load(Ordering::Relaxed), baseline);
+}
+
+/// The first `track` over a component type registers its machinery; further
+/// tracks of the same type reuse it, and a new type registers its own.
+#[test]
+fn track_on_demand_registers_once() {
+    use super::track::TrackedTypes;
+
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let e = app.world_mut().spawn_empty().id();
+    {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        // Two trackers of `Children` (different output types, same component).
+        let _a = commands.track(|c: Option<&Children>| c.is_some()).watch_entity(e);
+        let _b = commands
+            .track(|c: Option<&Children>| c.map_or(0usize, |c| c.iter().count()))
+            .watch_entity(e);
+    }
+    app.update();
+    assert_eq!(app.world().resource::<TrackedTypes>().0.len(), 1);
+
+    {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let _c = commands.track(|t: Option<&Tag>| t.map(|t| t.0)).watch_entity(e);
+    }
+    app.update();
+    assert_eq!(app.world().resource::<TrackedTypes>().0.len(), 2);
+}
+
+/// A tracker keyed on one entity is undisturbed by another entity's `Children`
+/// changing — the scanner routes by entity through the registry.
+#[test]
+fn track_unrelated_entity() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let watched = app.world_mut().spawn_empty().id();
+    app.world_mut().spawn(ChildOf(watched));
+    let other = app.world_mut().spawn_empty().id();
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    let children = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let children = commands
+            .track(|c: Option<&Children>| c.map_or(0usize, |c| c.iter().count()))
+            .watch_entity(watched);
+        let runs = runs.clone();
+        let downstream_src = children.clone();
+        commands.derive(move || {
+            runs.fetch_add(1, Ordering::Relaxed);
+            downstream_src.get()
+        });
+        children
+    };
+
+    app.update();
+    app.update();
+    let baseline = runs.load(Ordering::Relaxed);
+
+    // Mutate a different entity's `Children`.
+    app.world_mut().spawn(ChildOf(other));
+    app.update();
+    assert_eq!(runs.load(Ordering::Relaxed), baseline);
+    assert_eq!(children.get(), Ok(1));
+}
+
+// ---------------------------------------------------------------------------
+// Garbage collection (Arc-strong-count)
+// ---------------------------------------------------------------------------
+
+use super::gc::SignalGc;
+
+/// Number of live readable nodes (each carries a [`SignalGc`] probe).
+fn gc_node_count(world: &mut World) -> usize {
+    let mut q = world.query::<&SignalGc>();
+    q.iter(world).count()
+}
+
+/// Total number of live entities.
+fn entity_count(world: &mut World) -> usize {
+    let mut q = world.query::<Entity>();
+    q.iter(world).count()
+}
+
+/// A derive whose last handle is dropped falls to its rest count and is collected
+/// on the next sweep.
+#[test]
+fn gc_collects_dropped_derive() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(SweepFrequency(core::time::Duration::ZERO));
+
+    let handle = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.derive(|| Ok(1u32))
+    };
+
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 1);
+
+    drop(handle);
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 0);
+}
+
+/// A derive whose handle stays alive is never collected, sweep after sweep.
+#[test]
+fn gc_keeps_referenced_derive() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(SweepFrequency(core::time::Duration::ZERO));
+
+    let _handle = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.derive(|| Ok(1u32))
+    };
+
+    for _ in 0..4 {
+        app.update();
+        assert_eq!(gc_node_count(app.world_mut()), 1);
+    }
+}
+
+/// A subscriber pins its source through the captured handle: `a` survives while `b`
+/// (which reads it) lives, and the abandoned chain collects leaf-first.
+#[test]
+fn gc_cascades() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(SweepFrequency(core::time::Duration::ZERO));
+
+    let a = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.derive(|| Ok(1u32))
+    };
+    let b = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let a = a.clone();
+        commands.derive(move || Ok(a.get()? + 1))
+    };
+
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 2);
+
+    // Drop `a`'s handle: `a` is still pinned by `b`'s captured clone.
+    drop(a);
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 2);
+
+    // Drop `b`: `b` collects this sweep, releasing its capture of `a`; `a` then
+    // collects on the following sweep (leaf-first cascade).
+    drop(b);
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 1);
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 0);
+}
+
+/// Collecting a `track` node also purges its off-node `TrackedSources<T>` entry via
+/// the `TrackGc` `on_remove` hook.
+#[test]
+fn gc_collects_track_and_purges_registry() {
+    use super::track::TrackedSources;
+
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(SweepFrequency(core::time::Duration::ZERO));
+
+    let parent = app.world_mut().spawn_empty().id();
+    app.world_mut().spawn(ChildOf(parent));
+
+    let children = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.track(child_list).watch_entity(parent)
+    };
+
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 1);
+    assert!(
+        app.world()
+            .resource::<TrackedSources<Children>>()
+            .0
+            .contains_key(&parent)
+    );
+
+    drop(children);
+    app.update();
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 0);
+    assert!(
+        !app.world()
+            .resource::<TrackedSources<Children>>()
+            .0
+            .contains_key(&parent)
+    );
+}
+
+/// Collecting a `poll` node unregisters its system (fixing the leak): the poll system
+/// stops running once the node is gone.
+#[test]
+fn gc_unregisters_poll_system() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(SweepFrequency(core::time::Duration::ZERO));
+    app.insert_resource(External(1));
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    let polled = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let runs = runs.clone();
+        commands.poll(move |ext: Res<External>| {
+            runs.fetch_add(1, Ordering::Relaxed);
+            Ok(ext.0)
+        })
+    };
+
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 1);
+
+    // Drop the handle and let the node collect (which unregisters the system).
+    drop(polled);
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 0);
+
+    // The poll system no longer runs on subsequent flushes.
+    let after = runs.load(Ordering::Relaxed);
+    app.update();
+    app.update();
+    assert_eq!(runs.load(Ordering::Relaxed), after);
+}
+
+/// Within the grace interval, a dropped handle's node is *not* collected — the sweep
+/// only fires once per `SweepFrequency`.
+#[test]
+fn gc_respects_grace() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin); // default SweepFrequency (well above a test's wall-clock)
+
+    let handle = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.derive(|| Ok(1u32))
+    };
+
+    app.update();
+    assert_eq!(gc_node_count(app.world_mut()), 1);
+
+    drop(handle);
+    for _ in 0..4 {
+        app.update();
+    }
+    // Grace interval has not elapsed, so the node survives despite being at rest.
+    assert_eq!(gc_node_count(app.world_mut()), 1);
+}
+
+/// Collecting a `signal` node leaves no orphan query-observer entity: repeated
+/// create-then-collect cycles don't grow the live entity count.
+#[test]
+fn gc_no_orphan_observer() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(SweepFrequency(core::time::Duration::ZERO));
+
+    let watched = app.world_mut().spawn(Count(3)).id();
+
+    let mut counts = Vec::new();
+    for _ in 0..3 {
+        {
+            let world = app.world_mut();
+            let mut commands = world.commands();
+            // Handle dropped at the end of this block; the node builds then collects.
+            let _sig = commands.signal(|c: Start<&Count>| c.0).watch_entity(watched);
+        }
+        app.update();
+        app.update();
+        app.update();
+        assert_eq!(gc_node_count(app.world_mut()), 0);
+        counts.push(entity_count(app.world_mut()));
+    }
+
+    // One-time observer infrastructure lands in cycle 0; no per-signal leak means the
+    // live entity count is identical across later cycles.
+    assert_eq!(counts[0], counts[1]);
+    assert_eq!(counts[1], counts[2]);
+}

@@ -2,7 +2,7 @@
 //! systems) and the push-based flush — mark → topological settle → bounded
 //! fixpoint.
 
-use bevy_ecs::{prelude::*, system::SystemId};
+use bevy_ecs::{entity::EntityIndexSet, prelude::*, system::SystemId};
 use bevy_platform::collections::{HashMap, HashSet};
 
 use super::reactive_context::ReactiveContext;
@@ -43,14 +43,14 @@ pub enum NodeStatus {
 ///
 /// Maintained in place during the flush; the reverse of [`Sources`].
 #[derive(Component, Default)]
-pub struct Subscribers(Vec<Entity>);
+pub struct Subscribers(EntityIndexSet);
 
 /// Backward edges: the source entities this node reads.
 ///
 /// Rewritten by [`rewire_edges`] after each evaluation from the set collected by
 /// [`ReactiveContext`]; the reverse of [`Subscribers`].
 #[derive(Component, Default)]
-pub struct Sources(Vec<Entity>);
+pub struct Sources(EntityIndexSet);
 
 /// How a derived node recomputes. Input/source nodes (driven by a query
 /// observer) have no `SignalSystem`.
@@ -66,7 +66,7 @@ pub(crate) struct Polled;
 
 /// A type-erased evaluator for a closure-based node: runs the user closure inside
 /// a reactive context, writes the value cell, and reports `(changed, sources)`.
-pub(crate) type ClosureEval = Box<dyn FnMut() -> (bool, Vec<Entity>) + Send + Sync>;
+pub(crate) type ClosureEval = Box<dyn FnMut() -> (bool, EntityIndexSet) + Send + Sync>;
 
 /// A `derive`/`memo` node's evaluator. Closure nodes skip Bevy's system
 /// machinery entirely — most derived signals only read other signals, so a plain
@@ -207,15 +207,13 @@ fn settle_active(world: &mut World, active: Vec<Entity>) {
         settle_node(world, node);
         settled += 1;
 
-        let subscribers: Vec<Entity> = world
-            .get::<Subscribers>(node)
-            .map(|s| s.0.clone())
-            .unwrap_or_default();
-        for sub in subscribers {
-            if let Some(degree) = in_degree.get_mut(&sub) {
+        let subscribers = world.get::<Subscribers>(node);
+
+        for sub in subscribers.iter().flat_map(|s| s.0.iter()) {
+            if let Some(degree) = in_degree.get_mut(sub) {
                 *degree = degree.saturating_sub(1);
                 if *degree == 0 {
-                    ready.push(sub);
+                    ready.push(*sub);
                 }
             }
         }
@@ -249,12 +247,12 @@ fn settle_node(world: &mut World, node: Entity) {
     let should_run = match status {
         NodeStatus::Dirty => true,
         NodeStatus::Check => {
-            let sources: Vec<Entity> = world
-                .get::<Sources>(node)
-                .map(|s| s.0.clone())
-                .unwrap_or_default();
+            let sources = world.get::<Sources>(node);
             let changed = &world.resource::<ChangedNodes>().0;
-            sources.iter().any(|src| changed.contains(src))
+            sources
+                .iter()
+                .flat_map(|s| s.0.iter())
+                .any(|src| changed.contains(src))
         }
         NodeStatus::Clean => false,
     };
@@ -284,7 +282,7 @@ pub(crate) fn evaluate_node(world: &mut World, node: Entity) {
         if changed {
             world.resource_mut::<ChangedNodes>().0.insert(node);
         }
-        rewire_edges(world, node, &sources);
+        rewire_edges(world, node, sources);
         return;
     }
 
@@ -293,7 +291,7 @@ pub(crate) fn evaluate_node(world: &mut World, node: Entity) {
         if let Err(e) = result {
             log::error!("Failed to run signal system: {e}");
         }
-        rewire_edges(world, node, &sources);
+        rewire_edges(world, node, sources);
     }
 }
 
@@ -303,13 +301,11 @@ pub(crate) fn evaluate_node(world: &mut World, node: Entity) {
 /// the run. This deduplicates them, then updates both directions in place:
 /// removes `node` from the [`Subscribers`] of sources it no longer reads, adds it
 /// to those it newly reads, and stores the deduped set as `node`'s [`Sources`].
-fn rewire_edges(world: &mut World, node: Entity, new_sources: &[Entity]) {
-    let new_set: HashSet<Entity> = new_sources.iter().copied().collect();
-    let old: Vec<Entity> = world
+fn rewire_edges(world: &mut World, node: Entity, new_set: EntityIndexSet) {
+    let old_set = world
         .get::<Sources>(node)
         .map(|s| s.0.clone())
         .unwrap_or_default();
-    let old_set: HashSet<Entity> = old.iter().copied().collect();
 
     // Sources no longer read: unsubscribe this node.
     for removed in old_set.difference(&new_set) {
@@ -322,13 +318,13 @@ fn rewire_edges(world: &mut World, node: Entity, new_sources: &[Entity]) {
     for added in new_set.difference(&old_set) {
         if let Some(mut subs) = world.get_mut::<Subscribers>(*added) {
             if !subs.0.contains(&node) {
-                subs.0.push(node);
+                subs.0.insert(node);
             }
         }
     }
 
     if let Some(mut sources) = world.get_mut::<Sources>(node) {
-        sources.0 = new_set.into_iter().collect();
+        sources.0 = new_set;
     }
 }
 
@@ -360,7 +356,7 @@ where
 /// Tears down a graph node: unsubscribe from all sources, unregister its system,
 /// and despawn it. Safe to call on a sink whose host is gone.
 pub(crate) fn despawn_node(world: &mut World, node: Entity) {
-    rewire_edges(world, node, &[]);
+    rewire_edges(world, node, EntityIndexSet::new());
     if let Some(SignalSystem(system)) = world.get::<SignalSystem>(node).copied() {
         let _ = world.unregister_system(system);
     }

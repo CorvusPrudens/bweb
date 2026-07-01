@@ -12,6 +12,7 @@ use bevy_query_observer::{
 use std::sync::{Arc, Mutex, RwLock};
 
 use super::error::SignalResult;
+use super::gc::SignalGc;
 use super::graph::{
     ChangedNodes, ClosureEval, NodeStatus, PendingDirty, Polled, SignalClosure, SignalSystem,
     Sources, Subscribers, evaluate_node,
@@ -87,6 +88,7 @@ impl Signal for Commands<'_, '_> {
             builder: Mutex::new(None),
             watch: Mutex::new(WatchTarget::Global),
         });
+        self.entity(node).insert(SignalGc::new(&shared, 2));
 
         let piped = system.pipe({
             let shared = shared.clone();
@@ -214,6 +216,7 @@ where
             Sources::default(),
             NodeStatus::Dirty,
             SignalClosure(eval),
+            SignalGc::new(&value, 2),
         ))
         .id();
 
@@ -246,13 +249,15 @@ where
     PS: IntoSystem<(), (), PM> + Send + Sync + 'static,
     O: Send + Sync + 'static,
 {
-    // TODO: unregister the system on cleanup.
+    // The system is unregistered when the node is garbage-collected (`despawn_node`
+    // via `gc_pass`).
     let system = commands.register_system(piped);
     commands.entity(node).insert((
         Subscribers::default(),
         Sources::default(),
         NodeStatus::Dirty,
         SignalSystem(system),
+        SignalGc::new(&value, 2),
     ));
 
     commands.queue(move |world: &mut World| {
