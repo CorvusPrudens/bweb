@@ -11,9 +11,12 @@ use bevy_ecs::{
     prelude::*,
     world::DeferredWorld,
 };
-use std::sync::{Arc, Mutex, RwLock};
+use bevy_query_observer::observer::{RetargetQueryObserver, TriggerQueryObserver};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use super::error::{SignalError, SignalReadGuard, SignalResult};
+use super::graph::{PendingDirty, spawn_effect};
+use super::insert::bind_sink;
 use super::reactive_context::ReactiveContext;
 
 /// The graph-node entity a handle refers to.
@@ -89,7 +92,15 @@ pub(crate) enum WatchTarget {
     /// Watch the entity this signal is inserted into as a bundle; finalization is
     /// deferred to [`WatchBundle`]'s insertion hook ([`ObserverSignal::watch_bundle`]).
     Bundle,
+    /// Watch the entity another signal currently points at
+    /// ([`ObserverSignal::watch`]). The payload spawns the rebinder effect;
+    /// finalization takes and runs it.
+    Dynamic(Option<RebinderSpawn>),
 }
+
+/// Spawns the rebinder effect for a dynamically-watched signal. Consumed once by
+/// the deferred finalization.
+pub(crate) type RebinderSpawn = Box<dyn FnOnce(&mut World) + Send + Sync>;
 
 /// Spawns the backing query observer, watching `Some(entity)` or, if `None`,
 /// every matching entity. Consumed exactly once.
@@ -145,6 +156,91 @@ impl<O: Send + Sync + 'static> ObserverSignal<O> {
             shared: self.shared.clone(),
         }
     }
+
+    /// Watch the entity `source` currently points at — a **dynamic** target for
+    /// cross-entity chains ("component `T` on whichever entity that signal
+    /// resolves to", e.g. a `DocLabel` on an object's prototype).
+    ///
+    /// A rebinder effect subscribes to `source`: whenever it yields a new
+    /// entity, the query observer is re-targeted (the user system stays put;
+    /// only the trampoline observers rebuild) and re-seeded from the new
+    /// entity's current state. While `source` is `NotReady` the observer is
+    /// unbound and this signal reads as `NotReady`. The rebinder holds `source`
+    /// alive and is torn down with this signal's node.
+    pub fn watch<S>(self, source: S) -> Self
+    where
+        S: SignalRead<Value = Entity>,
+    {
+        let node = self.inner.entity;
+        let weak = Arc::downgrade(&self.shared);
+        let spawn: RebinderSpawn = Box::new(move |world: &mut World| {
+            spawn_rebinder(world, node, weak, source);
+        });
+        *self.shared.watch.lock().unwrap() = WatchTarget::Dynamic(Some(spawn));
+        self
+    }
+}
+
+/// Marker for the [`bind_sink`] binding that roots a dynamic watch's rebinder to
+/// its signal node.
+struct DynamicWatch;
+
+/// Spawns the rebinder effect for [`ObserverSignal::watch`] and roots it to the
+/// signal node (despawning the node tears the rebinder down via its binding).
+///
+/// The rebinder captures `source` **strongly** (the watcher keeps its target
+/// signal alive) but only a `Weak` of the observer's shared state, so it never
+/// pins the signal node against garbage collection.
+fn spawn_rebinder<S, O>(world: &mut World, node: Entity, weak: Weak<ObserverShared<O>>, source: S)
+where
+    S: SignalRead<Value = Entity>,
+    O: Send + Sync + 'static,
+{
+    let mut bound: Option<Entity> = None;
+    let mut commands = world.commands();
+
+    let rebinder = spawn_effect(&mut commands, move |mut commands: Commands| {
+        // Read inside the effect so the rebinder is rewired as a subscriber of
+        // `source` (even a `NotReady` read registers).
+        match source.get() {
+            Ok(target) if bound != Some(target) => {
+                bound = Some(target);
+                let weak = weak.clone();
+                commands.queue(move |world: &mut World| {
+                    let Some(shared) = weak.upgrade() else {
+                        return;
+                    };
+                    if shared.builder.lock().unwrap().is_some() {
+                        // First resolution: the one-shot builder constructs the
+                        // observer bound to the target and seeds from it.
+                        build_observer(&shared, world, Some(target));
+                    } else {
+                        world.retarget_query_observer(node, &[target]);
+                        // Re-seed from the new target's current state.
+                        world.trigger_query_observer(node, target);
+                    }
+                });
+            }
+            Ok(_) => {}
+            Err(SignalError::NotReady) => {
+                // Source lost its target: unbind and read as NotReady until a
+                // new target resolves.
+                if bound.take().is_some() {
+                    let weak = weak.clone();
+                    commands.queue(move |world: &mut World| {
+                        let Some(shared) = weak.upgrade() else {
+                            return;
+                        };
+                        world.retarget_query_observer(node, &[]);
+                        *shared.value.write().unwrap() = None;
+                        world.resource_mut::<PendingDirty>().0.push(node);
+                    });
+                }
+            }
+        }
+    });
+
+    bind_sink::<DynamicWatch>(&mut commands, node, rebinder);
 }
 
 /// Runs an [`ObserverShared`]'s one-shot observer builder with the resolved watch

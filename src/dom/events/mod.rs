@@ -156,7 +156,9 @@ impl Bevent {
         {
             app.add_systems(
                 PostUpdate,
-                manage_handlers::<web_sys::Event>.after(DomSystems::Attach),
+                // After Flush: listener attachment fetches the live handle,
+                // which only exists once the tick's creates are flushed.
+                manage_handlers::<web_sys::Event>.after(DomSystems::Flush),
             )
             .add_stop_observer(EventHandler::<web_sys::Event>::stop_event);
         }
@@ -283,7 +285,10 @@ impl<E: FromWasmAbi + 'static> EventHandler<E> {
     fn stop_event(data: Stop<(&EventOf, &Self)>, target: Query<&EventTarget>) -> Result {
         let (target_entity, handler) = data.into_inner();
 
-        if let Ok(target) = target.get(target_entity.0)
+        // `fetch`, not deref: handler teardown can race the target node's
+        // lifecycle (create still buffered, or node already dropped); a node
+        // outside the registry has no listeners left to remove.
+        if let Some(target) = target.get(target_entity.0).ok().and_then(EventTarget::fetch)
             && let Some(closure) = handler.closure.as_ref()
         {
             target

@@ -1,4 +1,8 @@
-use super::{DomSystems, html::Element};
+use super::{
+    DomSystems,
+    html::Element,
+    registry::{DomCommandBuffer, NodeId},
+};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
@@ -65,14 +69,11 @@ impl Class {
 
     fn attach_class(
         texts: Query<(&Self, &ClassOf), Changed<Self>>,
-        element: Query<&Element>,
+        element: Query<&NodeId>,
+        mut buffer: ResMut<DomCommandBuffer>,
     ) -> Result {
         for (class, parent) in &texts {
-            element
-                .get(parent.0)?
-                .class_list()
-                .add_1(&class.0)
-                .js_err()?;
+            buffer.add_class(*element.get(parent.0)?, &class.0);
         }
 
         Ok(())
@@ -86,7 +87,10 @@ impl Class {
         let Ok((class, parent)) = class.get(trigger.entity) else {
             return Ok(());
         };
-        let Ok(element) = element.get(parent.0) else {
+        // `fetch`, not deref: class removal can race the element's own
+        // lifecycle (create still buffered, or node already dropped), and a
+        // node outside the registry has nothing to clean up.
+        let Some(element) = element.get(parent.0).ok().and_then(Element::fetch) else {
             return Ok(());
         };
 

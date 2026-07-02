@@ -326,7 +326,9 @@ impl Track for Commands<'_, '_> {
                 let bind = match &*shared.watch.lock().unwrap() {
                     WatchTarget::Entity(e) => Bind::Entity(*e),
                     WatchTarget::Bundle => Bind::Bundle,
-                    WatchTarget::Global => Bind::Unbound,
+                    // Trackers have no dynamic-watch constructor, so `Dynamic`
+                    // is unreachable here; treat it as unbound.
+                    WatchTarget::Global | WatchTarget::Dynamic(_) => Bind::Unbound,
                 };
                 match bind {
                     Bind::Entity(entity) => build_track(&shared, world, Some(entity)),

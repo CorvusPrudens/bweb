@@ -113,13 +113,31 @@ impl SignalExt for Commands<'_, '_> {
             }
         }));
 
-        // Finalize `Global`/`Entity` now; `Bundle` waits for `WatchBundle`.
+        // Finalize `Global`/`Entity` now; `Bundle` waits for `WatchBundle`;
+        // `Dynamic` hands off to its rebinder effect (which performs the first
+        // build once its source resolves).
         self.queue({
             let shared = shared.clone();
-            move |world: &mut World| match &*shared.watch.lock().unwrap() {
-                WatchTarget::Bundle => {}
-                WatchTarget::Global => build_observer(&shared, world, None),
-                WatchTarget::Entity(entity) => build_observer(&shared, world, Some(*entity)),
+            move |world: &mut World| {
+                enum Bind {
+                    Now(Option<Entity>),
+                    Defer,
+                    Dynamic(super::handle::RebinderSpawn),
+                }
+                let bind = match &mut *shared.watch.lock().unwrap() {
+                    WatchTarget::Bundle => Bind::Defer,
+                    WatchTarget::Global => Bind::Now(None),
+                    WatchTarget::Entity(entity) => Bind::Now(Some(*entity)),
+                    WatchTarget::Dynamic(spawn) => match spawn.take() {
+                        Some(spawn) => Bind::Dynamic(spawn),
+                        None => Bind::Defer,
+                    },
+                };
+                match bind {
+                    Bind::Now(watched) => build_observer(&shared, world, watched),
+                    Bind::Defer => {}
+                    Bind::Dynamic(spawn) => spawn(world),
+                }
             }
         });
 

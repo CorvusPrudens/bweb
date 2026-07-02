@@ -228,7 +228,11 @@ impl<K: Send + Sync + 'static> Component for ReactiveBinding<K> {
     }
 }
 
-fn bind_sink<K: Send + Sync + 'static>(commands: &mut Commands, host: Entity, sink: Entity) {
+pub(crate) fn bind_sink<K: Send + Sync + 'static>(
+    commands: &mut Commands,
+    host: Entity,
+    sink: Entity,
+) {
     commands
         .entity(host)
         .insert(ReactiveBinding::<K>(sink, PhantomData));

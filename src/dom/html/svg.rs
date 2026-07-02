@@ -1,13 +1,10 @@
-use crate::{
-    dom::{DomSystems, prelude::attr::Xmlns},
-    js_err::JsErr,
+use crate::dom::{
+    DomSystems,
+    prelude::attr::Xmlns,
+    registry::{DomCommandBuffer, NodeIds},
 };
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
-use send_wrapper::SendWrapper;
-use wasm_bindgen::JsCast;
-
-use super::Document;
 
 pub(super) struct SvgPlugin;
 
@@ -26,22 +23,21 @@ pub struct SvgElementName(pub &'static str);
 
 fn inject_svg_element(
     elements: Query<(Entity, &SvgElementName), Without<super::Node>>,
-    document: Single<&Document>,
+    mut ids: ResMut<NodeIds>,
+    mut buffer: ResMut<DomCommandBuffer>,
     mut commands: Commands,
-) -> Result {
+) {
     for (entity, element) in &elements {
-        let element = document
-            .create_element_ns(Some("http://www.w3.org/2000/svg"), element.0)
-            .js_err()?;
+        let id = ids.alloc();
+        buffer.create_element_ns(id, "http://www.w3.org/2000/svg", element.0, entity);
 
         commands.entity(entity).insert((
-            super::Element(SendWrapper::new(element.clone())),
-            super::SvgElement(SendWrapper::new(element.clone().unchecked_into())),
-            super::Node(SendWrapper::new(element.unchecked_into())),
+            id,
+            super::Element::lazy(id),
+            super::SvgElement::lazy(id),
+            super::Node::lazy(id),
         ));
     }
-
-    Ok(())
 }
 
 #[derive(Default, Component, PartialEq, Eq, Clone)]

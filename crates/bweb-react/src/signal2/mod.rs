@@ -21,6 +21,7 @@ mod handle;
 mod insert;
 mod list;
 mod reactive_context;
+mod resource;
 mod signal;
 mod track;
 
@@ -42,6 +43,7 @@ pub use graph::{NodeStatus, SignalSystem, Sources, Subscribers};
 pub use handle::{DerivedSignal, ObserverSignal, Signal, SignalRead, WatchBundle};
 pub use insert::{MappedSignal, OptionSignal, ReactiveInsert, SignalMap, SignalOption};
 pub use list::{ReactiveList, ReactiveListExt};
+pub use resource::TrackResource;
 pub use signal::SignalExt;
 pub use track::{Track, TrackWatchBundle, TrackedSignal};
 

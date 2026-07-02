@@ -1,4 +1,8 @@
-use crate::dom::{DomSystems, html::Element};
+use crate::dom::{
+    DomSystems,
+    html::Element,
+    registry::{DomCommandBuffer, NodeId},
+};
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use std::borrow::Cow;
@@ -51,20 +55,25 @@ impl InnerHtml {
         self.0.to_mut()
     }
 
-    fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
-        for (html, element) in &attrs {
-            let Some(element) = element else {
+    fn attach(
+        attrs: Query<(&Self, Option<&NodeId>), Changed<Self>>,
+        mut buffer: ResMut<DomCommandBuffer>,
+    ) -> Result {
+        for (html, node_id) in &attrs {
+            let Some(node_id) = node_id else {
                 return Err("`InnerHTML` property requires an Element".into());
             };
 
-            element.set_inner_html(html);
+            buffer.set_inner_html(*node_id, html);
         }
 
         Ok(())
     }
 
     fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) {
-        let Ok(element) = attr.get(trigger.entity) else {
+        // `fetch`, not deref: teardown can run while the node's create is
+        // still buffered or after it was dropped — nothing to clean up then.
+        let Some(element) = attr.get(trigger.entity).ok().and_then(Element::fetch) else {
             return;
         };
 

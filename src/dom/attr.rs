@@ -1,4 +1,8 @@
-use super::{DomSystems, html::Element};
+use super::{
+    DomSystems,
+    html::Element,
+    registry::{DomCommandBuffer, NodeId},
+};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::{
@@ -37,8 +41,8 @@ macro_rules! attribute {
         pub struct $ty(Cow<'static, str>);
 
         impl Attribute for $ty {
-            fn set(&self, element: &Element) -> Result {
-                element.set_attribute($attr, &self.0).js_err()
+            fn push(&self, id: NodeId, buffer: &mut DomCommandBuffer) {
+                buffer.set_attribute(id, $attr, &self.0);
             }
         }
 
@@ -99,7 +103,7 @@ macro_rules! attribute {
 }
 
 trait Attribute {
-    fn set(&self, element: &Element) -> Result;
+    fn push(&self, id: NodeId, buffer: &mut DomCommandBuffer);
 }
 
 #[derive(Component, Default)]
@@ -144,16 +148,17 @@ fn update_attributes(
     mut attributes: Query<
         (
             &mut Attributes,
-            &Element,
+            &NodeId,
             EntityRefExcept<(Attributes, Element)>,
         ),
         Changed<Attributes>,
     >,
     ticks: SystemChangeTick,
-) -> Result {
-    for (mut attributes, element, entity) in &mut attributes {
+    mut buffer: ResMut<DomCommandBuffer>,
+) {
+    for (mut attributes, node_id, entity) in &mut attributes {
         for (_, attr) in attributes.removed.drain() {
-            element.remove_attribute(&attr).js_err()?;
+            buffer.remove_attribute(*node_id, &attr);
         }
 
         for (id, thunk) in &attributes.attributes {
@@ -162,12 +167,10 @@ fn update_attributes(
                 .is_some_and(|t| t.is_changed(ticks.last_run(), ticks.this_run()))
                 && let Some(attr) = thunk(&entity)
             {
-                attr.set(element)?;
+                attr.push(*node_id, &mut buffer);
             }
         }
     }
-
-    Ok(())
 }
 
 attribute! {Href, "href"}
@@ -241,8 +244,8 @@ macro_rules! boolean_attribute {
         pub struct $ty;
 
         impl Attribute for $ty {
-            fn set(&self, element: &Element) -> Result {
-                element.set_attribute($attr, "").js_err()
+            fn push(&self, id: NodeId, buffer: &mut DomCommandBuffer) {
+                buffer.set_attribute(id, $attr, "");
             }
         }
 
@@ -298,8 +301,8 @@ macro_rules! enum_attribute {
         }
 
         impl Attribute for $ty {
-            fn set(&self, element: &Element) -> Result {
-                element.set_attribute($attr, self.as_attribute()).js_err()
+            fn push(&self, id: NodeId, buffer: &mut DomCommandBuffer) {
+                buffer.set_attribute(id, $attr, self.as_attribute());
             }
         }
 
@@ -486,9 +489,9 @@ macro_rules! value_attribute {
         pub struct $ty(pub $inner);
 
         impl Attribute for $ty {
-            fn set(&self, element: &Element) -> Result {
+            fn push(&self, id: NodeId, buffer: &mut DomCommandBuffer) {
                 let value = self.0.to_string();
-                element.set_attribute($attr, &value).js_err()
+                buffer.set_attribute(id, $attr, &value);
             }
         }
 
@@ -532,9 +535,12 @@ pub enum Download {
 
 impl Download {
     // TODO: these should really be trait-like
-    fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
-        for (dl, element) in &attrs {
-            let Some(element) = element else {
+    fn attach(
+        attrs: Query<(&Self, Option<&NodeId>), Changed<Self>>,
+        mut buffer: ResMut<DomCommandBuffer>,
+    ) -> Result {
+        for (dl, node_id) in &attrs {
+            let Some(node_id) = node_id else {
                 return Err("'download' attribute requires an `Element`".into());
             };
 
@@ -543,14 +549,16 @@ impl Download {
                 Download::Auto => Cow::Borrowed(""),
             };
 
-            element.set_attribute("download", &value).js_err()?;
+            buffer.set_attribute(*node_id, "download", &value);
         }
 
         Ok(())
     }
 
     fn observe_remove(trigger: On<Remove, Self>, attr: Query<&Element>) -> Result {
-        let Ok(element) = attr.get(trigger.entity) else {
+        // `fetch`, not deref: teardown can run while the node's create is
+        // still buffered or after it was dropped — nothing to clean up then.
+        let Some(element) = attr.get(trigger.entity).ok().and_then(Element::fetch) else {
             return Ok(());
         };
 
@@ -586,15 +594,16 @@ impl Data {
     }
 
     // TODO: these should really be trait-like
-    fn attach(attrs: Query<(&Self, Option<&Element>), Changed<Self>>) -> Result {
-        for (data, element) in &attrs {
-            let Some(element) = element else {
+    fn attach(
+        attrs: Query<(&Self, Option<&NodeId>), Changed<Self>>,
+        mut buffer: ResMut<DomCommandBuffer>,
+    ) -> Result {
+        for (data, node_id) in &attrs {
+            let Some(node_id) = node_id else {
                 return Err(format!("'data-{}' attribute requires an `Element`", data.name).into());
             };
 
-            element
-                .set_attribute(&data.attribute_string(), &data.value)
-                .js_err()?;
+            buffer.set_attribute(*node_id, &data.attribute_string(), &data.value);
         }
 
         Ok(())
@@ -602,6 +611,10 @@ impl Data {
 
     fn remove(stop: Stop<(&Self, &Element)>) -> Result {
         let (data, element) = stop.into_inner();
+        // `fetch`, not deref: see `Download::observe_remove`.
+        let Some(element) = element.fetch() else {
+            return Ok(());
+        };
         element.remove_attribute(&data.attribute_string()).js_err()
     }
 

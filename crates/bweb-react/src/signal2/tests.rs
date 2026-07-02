@@ -1018,3 +1018,220 @@ fn list_teardown_on_host_despawn() {
     assert_eq!(tag_count(app.world_mut()), 0);
     assert_eq!(signal_node_count(app.world_mut()), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic watch (`ObserverSignal::watch`)
+// ---------------------------------------------------------------------------
+
+/// Points at the entity a dynamic watch should follow.
+#[derive(Component, Clone)]
+struct Sel(Entity);
+
+/// A dynamically-watched signal follows its source: it reads the current
+/// target's component, tracks later changes to it, rebinds when the source
+/// yields a new entity, and stops tracking the old target.
+#[test]
+fn dynamic_watch_follows_source() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let a = app.world_mut().spawn(Count(1)).id();
+    let b = app.world_mut().spawn(Count(2)).id();
+    let selector = app.world_mut().spawn(Sel(a)).id();
+
+    let count = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let target = commands
+            .signal(|s: Start<&Sel>| s.0)
+            .watch_entity(selector);
+        commands.signal(|c: Start<&Count>| c.0).watch(target)
+    };
+
+    // Bound + seeded from the initial target.
+    app.update();
+    assert_eq!(count.get(), Ok(1));
+
+    // Changes on the current target flow through.
+    app.world_mut().entity_mut(a).insert(Count(5));
+    app.update();
+    assert_eq!(count.get(), Ok(5));
+
+    // The source moving to a new entity rebinds and re-seeds.
+    app.world_mut().entity_mut(selector).insert(Sel(b));
+    app.update();
+    assert_eq!(count.get(), Ok(2));
+
+    // The old target is no longer watched.
+    app.world_mut().entity_mut(a).insert(Count(9));
+    app.update();
+    assert_eq!(count.get(), Ok(2));
+
+    // The new target is.
+    app.world_mut().entity_mut(b).insert(Count(7));
+    app.update();
+    assert_eq!(count.get(), Ok(7));
+}
+
+/// While the source is `NotReady`, a dynamic watch stays unbound and reads as
+/// `NotReady`; it binds as soon as the source resolves.
+#[test]
+fn dynamic_watch_waits_for_source() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let a = app.world_mut().spawn(Count(4)).id();
+    // No `Sel` yet: the source signal never fires, so it reads NotReady.
+    let selector = app.world_mut().spawn_empty().id();
+
+    let count = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let target = commands
+            .signal(|s: Start<&Sel>| s.0)
+            .watch_entity(selector);
+        commands.signal(|c: Start<&Count>| c.0).watch(target)
+    };
+
+    app.update();
+    assert_eq!(count.get(), Err(SignalError::NotReady));
+
+    // Source resolves late: the watch binds and seeds.
+    app.world_mut().entity_mut(selector).insert(Sel(a));
+    app.update();
+    assert_eq!(count.get(), Ok(4));
+}
+
+/// A source that loses its target unbinds the watch (reads become `NotReady`),
+/// and a later target rebinds it.
+#[test]
+fn dynamic_watch_unbinds_on_source_loss() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let a = app.world_mut().spawn(Count(1)).id();
+    let b = app.world_mut().spawn(Count(2)).id();
+    let selector = app.world_mut().spawn(Sel(a)).id();
+
+    let count = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        // Route through `track` + `memo` so removing `Sel` propagates an
+        // explicit NotReady (a bare query observer can't see removal-to-absent).
+        let tracked = commands
+            .track(|s: Option<&Sel>| s.map(|s| s.0))
+            .watch_entity(selector);
+        let target = commands.memo(move || tracked.get()?.ok_or(SignalError::NotReady));
+        commands.signal(|c: Start<&Count>| c.0).watch(target)
+    };
+
+    app.update();
+    assert_eq!(count.get(), Ok(1));
+
+    // Losing the target unbinds: reads become NotReady, and changes to the
+    // former target no longer arrive.
+    app.world_mut().entity_mut(selector).remove::<Sel>();
+    app.update();
+    assert_eq!(count.get(), Err(SignalError::NotReady));
+    app.world_mut().entity_mut(a).insert(Count(9));
+    app.update();
+    assert_eq!(count.get(), Err(SignalError::NotReady));
+
+    // A new target rebinds.
+    app.world_mut().entity_mut(selector).insert(Sel(b));
+    app.update();
+    assert_eq!(count.get(), Ok(2));
+}
+
+/// Collecting a dynamically-watched node also tears down its rebinder, which
+/// releases the source it was pinning.
+#[test]
+fn dynamic_watch_gc_releases_source() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(SweepFrequency(core::time::Duration::ZERO));
+
+    let a = app.world_mut().spawn(Count(1)).id();
+    let selector = app.world_mut().spawn(Sel(a)).id();
+
+    fn gc_count(world: &mut World) -> usize {
+        let mut q = world.query::<&super::gc::SignalGc>();
+        q.iter(world).count()
+    }
+
+    let count = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let target = commands
+            .signal(|s: Start<&Sel>| s.0)
+            .watch_entity(selector);
+        // The rebinder holds `target`; the test holds only `count`.
+        commands.signal(|c: Start<&Count>| c.0).watch(target)
+    };
+
+    app.update();
+    assert_eq!(count.get(), Ok(1));
+    // Two readable nodes: the target signal and the watched signal.
+    assert_eq!(gc_count(app.world_mut()), 2);
+
+    // Dropping the only external handle collects the watched node; its binding
+    // despawns the rebinder, releasing the target signal for the next sweep.
+    drop(count);
+    app.update();
+    app.update();
+    assert_eq!(gc_count(app.world_mut()), 0);
+}
+
+// ---------------------------------------------------------------------------
+// `track_resource`
+// ---------------------------------------------------------------------------
+
+#[derive(Resource, Clone)]
+struct Reg(u32);
+
+/// A tracked resource seeds from the current value and follows change ticks.
+#[test]
+fn track_resource_seeds_and_updates() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(Reg(1));
+
+    let reg = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.track_resource::<Reg>()
+    };
+    let doubled = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let reg = reg.clone();
+        commands.memo(move || Ok(reg.read()?.0 * 2))
+    };
+
+    app.update();
+    assert_eq!(doubled.get(), Ok(2));
+
+    app.world_mut().resource_mut::<Reg>().0 = 21;
+    app.update();
+    assert_eq!(doubled.get(), Ok(42));
+}
+
+/// A resource inserted after the node was created flows through on arrival.
+#[test]
+fn track_resource_late_insert() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let reg = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        commands.track_resource::<Reg>()
+    };
+
+    app.update();
+    assert_eq!(reg.read().err(), Some(SignalError::NotReady));
+
+    app.insert_resource(Reg(7));
+    app.update();
+    assert_eq!(reg.read().map(|r| r.0), Ok(7));
+}

@@ -1,8 +1,10 @@
-use crate::dom::{DomSystems, html::Node};
+use crate::dom::{
+    DomSystems,
+    html::Node,
+    registry::{DomCommandBuffer, NodeId},
+};
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
-use send_wrapper::SendWrapper;
-use wasm_bindgen::JsValue;
 
 pub struct PropPlugin;
 
@@ -23,7 +25,24 @@ impl Plugin for PropPlugin {
 
 pub trait Prop {
     const NAME: &'static str;
-    type Value: Into<JsValue> + Clone + Send + Sync + 'static;
+    type Value: PropValue;
+}
+
+/// A value assignable to a JS property through the DOM command stream.
+pub trait PropValue: Clone + Send + Sync + 'static {
+    fn push(&self, id: NodeId, name: &str, buffer: &mut DomCommandBuffer);
+}
+
+impl PropValue for String {
+    fn push(&self, id: NodeId, name: &str, buffer: &mut DomCommandBuffer) {
+        buffer.set_property_str(id, name, self);
+    }
+}
+
+impl PropValue for bool {
+    fn push(&self, id: NodeId, name: &str, buffer: &mut DomCommandBuffer) {
+        buffer.set_property_bool(id, name, *self);
+    }
 }
 
 #[derive(Component)]
@@ -51,15 +70,11 @@ where
 
 impl<P: Prop + 'static> PropContainer<P> {
     fn resolve_props(
-        props: Query<(&Node, &Self), Or<(Changed<Node>, Changed<Self>)>>,
-        mut target: Local<Option<SendWrapper<JsValue>>>,
+        props: Query<(&NodeId, &Self), Or<(Changed<Node>, Changed<Self>)>>,
+        mut buffer: ResMut<DomCommandBuffer>,
     ) {
-        let target = target.get_or_insert_with(|| SendWrapper::new(P::NAME.into()));
-
-        for (node, prop) in props {
-            if let Err(e) = js_sys::Reflect::set(node, target, &prop.0.clone().into()) {
-                log::error!("failed to set property: {e:?}");
-            }
+        for (id, prop) in props {
+            prop.0.push(*id, P::NAME, &mut buffer);
         }
     }
 

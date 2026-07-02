@@ -7,6 +7,7 @@ pub mod class;
 pub mod events;
 pub mod html;
 pub mod prop;
+pub mod registry;
 pub mod util;
 
 #[derive(Default)]
@@ -37,11 +38,20 @@ impl Plugin for DomPlugin {
                 DomSystems::Insert.after(DomSystems::ResolveRoutes),
                 DomSystems::Reparent.after(DomSystems::Insert),
                 DomSystems::Attach.after(DomSystems::Reparent),
+                DomSystems::Flush.after(DomSystems::Attach),
             ),
         )
+        .init_resource::<registry::NodeIds>()
+        .init_resource::<registry::DomCommandBuffer>()
         .add_systems(
             PostUpdate,
-            reparent_incremental.in_set(DomSystems::Reparent),
+            (
+                reparent_incremental.in_set(DomSystems::Reparent),
+                registry::flush_commands.in_set(DomSystems::Flush),
+                // Freed node ids become reusable only once the tick's ops
+                // are flushed (ABA guard for in-flight references).
+                registry::promote_free_ids.after(DomSystems::Flush),
+            ),
         );
     }
 }
@@ -115,11 +125,12 @@ impl DomMirror<'_, '_> {
 }
 
 fn reparent_incremental(
-    changed_nodes: Query<(Entity, &html::Node, Option<Ref<Children>>), Changed<html::Node>>,
-    changed_children: Query<(Entity, Ref<html::Node>, &Children), Changed<Children>>,
-    nodes: Query<(Ref<html::Node>, Option<Ref<Children>>)>,
+    changed_nodes: Query<(Entity, &registry::NodeId, Option<Ref<Children>>), Changed<html::Node>>,
+    changed_children: Query<(Entity, Ref<html::Node>, &registry::NodeId, &Children), Changed<Children>>,
+    nodes: Query<(Ref<html::Node>, &registry::NodeId, Option<Ref<Children>>)>,
     parents: Query<&ChildOf>,
     mut mirror: DomMirror,
+    mut buffer: ResMut<registry::DomCommandBuffer>,
 ) -> Result {
     for (entity, node, children) in &changed_nodes {
         // Attach every child onto this fresh node, in `Children`
@@ -129,8 +140,8 @@ fn reparent_incremental(
             let children: &[Entity] = children.into_inner().as_ref();
             let mut attached = Vec::with_capacity(children.len());
             for &child in children {
-                if let Ok((child_node, _)) = nodes.get(child) {
-                    node.append_child(&child_node).js_err()?;
+                if let Ok((_, child_node, _)) = nodes.get(child) {
+                    buffer.append(*node, *child_node);
                     attached.push(child);
                 }
             }
@@ -172,7 +183,7 @@ fn reparent_incremental(
         };
         let parent_entity = child_of.0;
 
-        let Ok((parent_node, parent_children)) = nodes.get(parent_entity) else {
+        let Ok((parent_node, parent_id, parent_children)) = nodes.get(parent_entity) else {
             continue;
         };
 
@@ -202,14 +213,12 @@ fn reparent_incremental(
 
         match next {
             Some(anchor) => {
-                let (anchor_node, _) = nodes.get(anchor)?;
-                parent_node
-                    .insert_before(node, Some(anchor_node.as_ref()))
-                    .js_err()?;
+                let (_, anchor_node, _) = nodes.get(anchor)?;
+                buffer.insert_before(*parent_id, *node, *anchor_node);
                 mirror.attach(entity, parent_entity, Some(anchor))?;
             }
             None => {
-                parent_node.append_child(node).js_err()?;
+                buffer.append(*parent_id, *node);
                 mirror.attach(entity, parent_entity, None)?;
             }
         }
@@ -217,16 +226,17 @@ fn reparent_incremental(
 
     // A parent's `Children` changed but its `Node` did not -- reconcile
     // DOM order (and attach any children that weren't in the DOM yet).
-    for (entity, node, children) in &changed_children {
+    for (entity, node, node_id, children) in &changed_children {
         if node.is_changed() {
             continue;
         }
         sync_child_order(
             entity,
-            node.into_inner(),
+            *node_id,
             children.as_ref(),
             &nodes,
             &mut mirror,
+            &mut buffer,
         )?;
     }
 
@@ -251,6 +261,14 @@ pub enum DomSystems {
     Reparent,
     /// Attach events, classes, or attributes to elements.
     Attach,
+    /// Execute the tick's buffered DOM writes in one Wasm↔JS crossing.
+    ///
+    /// Between [`DomSystems::Insert`] and this set the DOM lags the ECS:
+    /// fresh nodes don't exist yet (dereferencing their handles panics) and
+    /// structural reads through warm handles see the pre-mutation tree. User
+    /// systems in `PostUpdate` must be scheduled before `Insert` or after
+    /// this set.
+    Flush,
 }
 
 /// Make the DOM order of `parent`'s entity-backed children match their
@@ -262,10 +280,11 @@ pub enum DomSystems {
 /// no DOM work at all.
 fn sync_child_order(
     parent_entity: Entity,
-    parent: &html::Node,
+    parent: registry::NodeId,
     children: &[Entity],
-    nodes: &Query<(Ref<html::Node>, Option<Ref<Children>>)>,
+    nodes: &Query<(Ref<html::Node>, &registry::NodeId, Option<Ref<Children>>)>,
     mirror: &mut DomMirror,
+    buffer: &mut registry::DomCommandBuffer,
 ) -> Result {
     use bevy_platform::collections::{HashMap, HashSet};
 
@@ -275,12 +294,12 @@ fn sync_child_order(
     let mut desired = Vec::with_capacity(children.len());
     let mut desired_index = HashMap::with_capacity(children.len());
     for child in children {
-        let Ok((child_node, _)) = nodes.get(*child) else {
+        let Ok((_, child_node, _)) = nodes.get(*child) else {
             continue;
         };
 
         desired_index.insert(*child, desired.len());
-        desired.push((*child, (**child_node).clone()));
+        desired.push((*child, *child_node));
     }
 
     // The current order, as desired-indices of the parent's attached entity
@@ -307,7 +326,7 @@ fn sync_child_order(
     // pay an O(len) mirror insert per child.
     if current.is_empty() {
         for (child, node) in &desired {
-            parent.append_child(node).js_err()?;
+            buffer.append(parent, *node);
             mirror.attach(*child, parent_entity, None)?;
         }
         return Ok(());
@@ -317,18 +336,19 @@ fn sync_child_order(
         .into_iter()
         .collect();
 
-    let mut anchor: Option<(Entity, web_sys::Node)> = None;
+    let mut anchor: Option<(Entity, registry::NodeId)> = None;
     for (i, (child, node)) in desired.iter().enumerate().rev() {
         if keep.contains(&i) {
-            anchor = Some((*child, node.clone()));
+            anchor = Some((*child, *node));
             continue;
         }
 
-        parent
-            .insert_before(node, anchor.as_ref().map(|(_, node)| node))
-            .js_err()?;
-        mirror.attach(*child, parent_entity, anchor.as_ref().map(|(e, _)| *e))?;
-        anchor = Some((*child, node.clone()));
+        match anchor {
+            Some((_, anchor_node)) => buffer.insert_before(parent, *node, anchor_node),
+            None => buffer.append(parent, *node),
+        }
+        mirror.attach(*child, parent_entity, anchor.map(|(e, _)| e))?;
+        anchor = Some((*child, *node));
     }
 
     Ok(())
@@ -428,6 +448,7 @@ pub mod prelude {
     pub use super::html::NodeLookup;
     pub use super::html::{elements::*, svg::*, *};
     pub use super::prop;
+    pub use super::registry::{DomCommandBuffer, NodeId};
     pub use super::util::*;
     pub use crate::{class, classes, events};
 }
