@@ -35,6 +35,21 @@ pub struct AnyBundle {
 type AnyBundleCleanup = fn(EntityWorldMut);
 
 impl AnyBundle {
+    /// Applies the contents directly to `entity` without storing the
+    /// `AnyBundle` carrier component itself.
+    ///
+    /// Use this on hosts that also carry a reactive sink producing
+    /// `AnyBundle` (`.map(..).into_any()` chains): the sink inserts its
+    /// mapped value onto the same entity, which would *replace* a stored
+    /// carrier and run its cleanup — tearing down everything the original
+    /// bundle inserted. Teardown for `apply`ed contents falls to the host's
+    /// own lifecycle (each inner component keeps its hooks).
+    pub fn apply(mut self, entity: EntityWorldMut) {
+        if let Some(inserter) = self.inserter.take() {
+            inserter(entity);
+        }
+    }
+
     fn on_insert_hook(mut world: DeferredWorld, context: HookContext) {
         let inserter = world
             .get_mut::<Self>(context.entity)

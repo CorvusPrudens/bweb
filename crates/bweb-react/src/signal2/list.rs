@@ -264,7 +264,7 @@ where
         let managed = managed.clone();
         Box::new(move |commands: &mut Commands, host: Entity| {
             let mut state = ListState::<K, I>::default();
-            spawn_effect(commands, move |mut commands: Commands| {
+            spawn_effect(commands, move |commands: &mut Commands| {
                 let Ok(new) = items() else {
                     // NotReady: leave the current list untouched.
                     return;
@@ -288,7 +288,7 @@ where
 
                 for (k, item) in diff.additions {
                     let entity = commands.spawn_empty().id();
-                    let bundle = child(&mut commands, item.clone());
+                    let bundle = child(&mut *commands, item.clone());
                     commands.entity(entity).insert((bundle, R::from(host)));
                     state.map.insert(k, (entity, item));
                     managed.lock().unwrap().insert(entity);
@@ -297,7 +297,7 @@ where
                 for (k, item) in diff.updates {
                     if let Some((entity, old)) = state.map.get_mut(&k) {
                         let entity = *entity;
-                        let bundle = child(&mut commands, item.clone());
+                        let bundle = child(&mut *commands, item.clone());
                         // Re-render on the same entity: clean the prior bundle
                         // (subtree included) and re-insert. No respawn, no reorder.
                         commands

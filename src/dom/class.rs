@@ -73,7 +73,17 @@ impl Class {
         mut buffer: ResMut<DomCommandBuffer>,
     ) -> Result {
         for (class, parent) in &texts {
-            buffer.add_class(*element.get(parent.0)?, &class.0);
+            // Per-entity fault tolerance: `Changed` is consumed by this run,
+            // so bailing on one bad target would silently drop every other
+            // class in the batch.
+            match element.get(parent.0) {
+                Ok(node) => buffer.add_class(*node, &class.0),
+                Err(e) => log::error!(
+                    "attach_class: no element for class `{}` (target {}): {e}",
+                    class.0,
+                    parent.0
+                ),
+            }
         }
 
         Ok(())

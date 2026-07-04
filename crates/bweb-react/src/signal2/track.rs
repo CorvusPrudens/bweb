@@ -30,7 +30,7 @@ use bevy_ecs::{
     component::{ComponentId, Mutable, StorageType},
     lifecycle::{ComponentHook, HookContext},
     prelude::*,
-    schedule::{IntoScheduleConfigs, Schedules},
+    schedule::IntoScheduleConfigs,
     world::DeferredWorld,
 };
 use bevy_platform::collections::{HashMap, HashSet};
@@ -41,7 +41,7 @@ use super::error::{SignalReadGuard, SignalResult};
 use super::gc::SignalGc;
 use super::graph::{NodeStatus, PendingDirty, Sources, Subscribers};
 use super::handle::{SignalInner, SignalRead, WatchTarget, read_value};
-use super::{ReactSchedule, ReactiveSystems};
+use super::ReactiveSystems;
 
 /// A handle onto a change-scanning input signal produced by [`Track::track`].
 pub struct TrackedSignal<O> {
@@ -65,6 +65,14 @@ impl<O: Send + Sync + 'static> SignalRead for TrackedSignal<O> {
 
     fn read(&self) -> SignalResult<SignalReadGuard<'_, O>> {
         read_value(self.inner.entity, &self.shared.value)
+    }
+
+    fn source_node(&self) -> Option<Entity> {
+        Some(self.inner.entity)
+    }
+
+    fn peek_ready(&self) -> bool {
+        self.shared.value.read().unwrap().is_some()
     }
 }
 
@@ -232,11 +240,9 @@ fn bootstrap<T: Component>(world: &mut World) {
     }
     world.init_resource::<TrackedSources<T>>();
     world.add_observer(on_remove_tracked::<T>);
-    world
-        .resource_mut::<Schedules>()
-        .get_mut(ReactSchedule)
-        .expect("ReactSchedule is initialised by Signal2Plugin")
-        .add_systems(scan_changed::<T>.in_set(ReactiveSystems::Scan));
+    super::register_scanner(world, |schedule| {
+        schedule.add_systems(scan_changed::<T>.in_set(ReactiveSystems::Scan));
+    });
 }
 
 /// The `track` constructor, added to `Commands`.
@@ -290,6 +296,10 @@ impl Track for Commands<'_, '_> {
                 bootstrap::<T>(world);
                 let seeded = extract(world.get::<T>(entity));
                 *shared.value.write().unwrap() = Some(seeded);
+                // Wake subscribers that read `NotReady` before this bind (e.g.
+                // deferred sinks with a pre-registered edge, or a sink whose
+                // hook ran before a `watch_bundle` bind on the same host).
+                world.resource_mut::<PendingDirty>().0.push(node);
                 let write: Box<dyn Fn(Option<&T>) + Send + Sync> = Box::new({
                     let shared = shared.clone();
                     let extract = extract.clone();

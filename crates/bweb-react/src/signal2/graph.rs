@@ -2,9 +2,10 @@
 //! systems) and the push-based flush — mark → topological settle → bounded
 //! fixpoint.
 
-use bevy_ecs::{entity::EntityIndexSet, prelude::*, system::SystemId};
+use bevy_ecs::{entity::EntityIndexSet, prelude::*, system::SystemId, world::CommandQueue};
 use bevy_platform::collections::{HashMap, HashSet};
 
+use super::handle::SignalRead;
 use super::reactive_context::ReactiveContext;
 
 /// Input nodes whose value changed since the last flush.
@@ -37,6 +38,14 @@ pub(crate) struct FlushMetrics {
     /// (or a mid-flush rewire) and forced another round.
     pub(crate) passes: usize,
 }
+
+/// Whether the last [`flush`] settled any node. Sinks evaluated inside the
+/// flush can mutate *tracked* state after this run's scanners already ran;
+/// [`run_react_schedule`](super::run_react_schedule) re-runs the schedule
+/// while this is set so those changes are scanned within the same frame
+/// instead of waiting on the next external event.
+#[derive(Resource, Default)]
+pub(crate) struct FlushWork(pub(crate) bool);
 
 /// Scheduler status of a reactive node.
 ///
@@ -86,6 +95,18 @@ pub(crate) type ClosureEval = Box<dyn FnMut() -> (bool, EntityIndexSet) + Send +
 #[derive(Component)]
 pub(crate) struct SignalClosure(pub(crate) ClosureEval);
 
+/// A type-erased evaluator for an effect (sink) node: runs against a deferred
+/// `Commands` view; [`evaluate_node`] applies the queue immediately after the
+/// run, mirroring what `run_system` did back when sinks were registered one-shot
+/// systems.
+pub(crate) type EffectEval = Box<dyn FnMut(&mut Commands) + Send + Sync>;
+
+/// An effect node's evaluator. The `Option` lets [`evaluate_node`] take the
+/// closure out while it holds `&mut World` (re-entry on the same node then
+/// no-ops) and hand it back afterwards.
+#[derive(Component)]
+pub(crate) struct EffectClosure(pub(crate) Option<EffectEval>);
+
 /// Maximum fixpoint passes per flush before bailing out. A well-formed graph
 /// settles in one pass; extra passes only occur when a sink's side effect (e.g.
 /// a component insertion) trips an input observer, or a mid-flush rewire surfaces
@@ -98,8 +119,14 @@ const REACTION_LIMIT: usize = 16;
 /// topological order, then loop if a sink enqueued new work — up to
 /// [`REACTION_LIMIT`].
 pub(crate) fn flush(world: &mut World) {
-    #[cfg(feature = "dev")]
     let mut passes = 0usize;
+
+    // Reset the work flag for this flush; the `EffectClosure` arm of
+    // `evaluate_node` raises it when a sink runs. Only sinks mutate the world,
+    // so only they can produce changes this run's scanners already missed —
+    // poll nodes re-evaluate every pass by design and must not be counted as
+    // work, or the schedule loop would always run to its cap.
+    world.resource_mut::<FlushWork>().0 = false;
 
     for _ in 0..REACTION_LIMIT {
         // Start each pass from a clean change set: this discards marks left by
@@ -114,10 +141,7 @@ pub(crate) fn flush(world: &mut World) {
             break;
         }
 
-        #[cfg(feature = "dev")]
-        {
-            passes += 1;
-        }
+        passes += 1;
 
         // The inputs that fired have, by definition, changed.
         world.resource_mut::<ChangedNodes>().0.extend(inputs);
@@ -296,9 +320,12 @@ fn settle_node(world: &mut World, node: Entity) {
 /// - Closure nodes ([`SignalClosure`], i.e. `derive`/`memo`) are called directly
 ///   — no Bevy system — and report whether their value moved; [`evaluate_node`]
 ///   marks them in [`ChangedNodes`] accordingly.
-/// - System nodes ([`SignalSystem`], i.e. reactive sinks and `poll`) are run via
-///   `run_system`; their own sink writes the value and marks change propagation.
-/// - Input nodes (neither component) are a no-op — driven by their query observer.
+/// - Effect nodes ([`EffectClosure`], i.e. reactive sinks) run against a local
+///   command queue that is applied immediately after the run, still inside the
+///   collect — the exact flush point `run_system` used when sinks were systems.
+/// - System nodes ([`SignalSystem`], i.e. `poll`) are run via `run_system`;
+///   their own sink writes the value and marks change propagation.
+/// - Input nodes (none of the above) are a no-op — driven by their query observer.
 pub(crate) fn evaluate_node(world: &mut World, node: Entity) {
     if let Some((changed, sources)) = world
         .get_mut::<SignalClosure>(node)
@@ -308,6 +335,35 @@ pub(crate) fn evaluate_node(world: &mut World, node: Entity) {
             world.resource_mut::<ChangedNodes>().0.insert(node);
         }
         rewire_edges(world, node, sources);
+        return;
+    }
+
+    if let Some(mut eval) = world
+        .get_mut::<EffectClosure>(node)
+        .and_then(|mut closure| closure.bypass_change_detection().0.take())
+    {
+        // Effects are the only evaluations that mutate the world, so they are
+        // what obligates another scanner pass (see `FlushWork`). Polls are
+        // read-only and closures are pure — neither counts.
+        if let Some(mut work) = world.get_resource_mut::<FlushWork>() {
+            work.0 = true;
+        }
+        let mut queue = CommandQueue::default();
+        let ((), sources) = ReactiveContext::collect(|| {
+            {
+                let mut commands = Commands::new(&mut queue, world);
+                eval(&mut commands);
+            }
+            queue.apply(world);
+        });
+        // Hand the closure back; if the node despawned itself via its own
+        // commands (host teardown), the box just drops here, releasing its
+        // captured source handles for GC — and edges must not be rewired
+        // (that would re-insert the dead node into its sources' subscribers).
+        if let Some(mut closure) = world.get_mut::<EffectClosure>(node) {
+            closure.bypass_change_detection().0 = Some(eval);
+            rewire_edges(world, node, sources);
+        }
         return;
     }
 
@@ -353,22 +409,23 @@ fn rewire_edges(world: &mut World, node: Entity, new_set: EntityIndexSet) {
     }
 }
 
-/// Spawns a graph node whose system runs for side effects (not a readable
-/// value). Unlike `derive` the system may use `Commands` (it is not a
-/// `ReadOnlySystem`) and there is no value cell. Used for reactive sinks —
-/// component insertion, mapping, `option`.
-pub(crate) fn spawn_effect<Sys, M>(commands: &mut Commands, system: Sys) -> Entity
+/// Spawns a graph node whose closure runs for side effects (not a readable
+/// value). The closure receives a deferred `Commands` view whose queue is
+/// applied right after each run, and there is no value cell. Used for reactive
+/// sinks — component insertion, mapping, `option`, list reconciliation, watch
+/// rebinding.
+pub(crate) fn spawn_effect<F>(commands: &mut Commands, eval: F) -> Entity
 where
-    Sys: IntoSystem<(), (), M> + Send + Sync + 'static,
+    F: FnMut(&mut Commands) + Send + Sync + 'static,
 {
-    let node = commands.spawn_empty().id();
-    let system = commands.register_system(system);
-    commands.entity(node).insert((
-        Subscribers::default(),
-        Sources::default(),
-        NodeStatus::Dirty,
-        SignalSystem(system),
-    ));
+    let node = commands
+        .spawn((
+            Subscribers::default(),
+            Sources::default(),
+            NodeStatus::Dirty,
+            EffectClosure(Some(Box::new(eval))),
+        ))
+        .id();
     commands.queue(move |world: &mut World| {
         evaluate_node(world, node);
         if let Some(mut status) = world.get_mut::<NodeStatus>(node) {
@@ -378,8 +435,61 @@ where
     node
 }
 
-/// Tears down a graph node: unsubscribe from all sources, unregister its system,
-/// and despawn it. Safe to call on a sink whose host is gone.
+/// Pre-registers `sink` as a subscriber of `source` without evaluating it —
+/// the add direction of [`rewire_edges`]. Returns `false` when `source` is not
+/// a live graph node (the caller falls back to eager evaluation).
+fn pre_register_edge(world: &mut World, sink: Entity, source: Entity) -> bool {
+    let Some(mut subs) = world.get_mut::<Subscribers>(source) else {
+        return false;
+    };
+    subs.0.insert(sink);
+    if let Some(mut sources) = world.get_mut::<Sources>(sink) {
+        sources.0.insert(source);
+    }
+    true
+}
+
+/// [`spawn_effect`] for a sink with one statically-known source. If the source
+/// is unready when the spawn command applies, the subscriber edge is
+/// pre-registered and the initial evaluation is skipped — the throwaway run a
+/// plain [`spawn_effect`] would do exists only to discover that edge. The
+/// source's seed then pushes it to [`PendingDirty`], and the flush marks this
+/// sink `Dirty` through the pre-registered edge for its first real run (which
+/// must end `Clean` here: a parked `Dirty` node is skipped by the marking
+/// walk and would never settle). If the source is already ready — or exposes
+/// no graph node — this behaves exactly like [`spawn_effect`].
+pub(crate) fn spawn_effect_with_source<S, F>(commands: &mut Commands, source: &S, eval: F) -> Entity
+where
+    S: SignalRead,
+    F: FnMut(&mut Commands) + Send + Sync + 'static,
+{
+    let node = commands
+        .spawn((
+            Subscribers::default(),
+            Sources::default(),
+            NodeStatus::Dirty,
+            EffectClosure(Some(Box::new(eval))),
+        ))
+        .id();
+    let probe = source.clone();
+    commands.queue(move |world: &mut World| {
+        let deferred = !probe.peek_ready()
+            && probe
+                .source_node()
+                .is_some_and(|source| pre_register_edge(world, node, source));
+        if !deferred {
+            evaluate_node(world, node);
+        }
+        if let Some(mut status) = world.get_mut::<NodeStatus>(node) {
+            *status = NodeStatus::Clean;
+        }
+    });
+    node
+}
+
+/// Tears down a graph node: unsubscribe from all sources, unregister its system
+/// (if it has one — closure sinks don't), and despawn it. Safe to call on a sink
+/// whose host is gone.
 pub(crate) fn despawn_node(world: &mut World, node: Entity) {
     rewire_edges(world, node, EntityIndexSet::new());
     if let Some(SignalSystem(system)) = world.get::<SignalSystem>(node).copied() {

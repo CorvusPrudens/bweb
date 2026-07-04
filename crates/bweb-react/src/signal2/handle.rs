@@ -15,7 +15,7 @@ use bevy_query_observer::observer::{RetargetQueryObserver, TriggerQueryObserver}
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use super::error::{SignalError, SignalReadGuard, SignalResult};
-use super::graph::{PendingDirty, spawn_effect};
+use super::graph::{PendingDirty, spawn_effect_with_source};
 use super::insert::bind_sink;
 use super::reactive_context::ReactiveContext;
 
@@ -42,6 +42,22 @@ pub trait SignalRead: Clone + Send + Sync + 'static {
         Self::Value: Clone,
     {
         Ok(self.read()?.clone())
+    }
+
+    /// The graph node backing this signal, if any. `None` (the conservative
+    /// default) disables edge pre-registration, keeping deferred sinks on the
+    /// eager path.
+    #[doc(hidden)]
+    fn source_node(&self) -> Option<Entity> {
+        None
+    }
+
+    /// Whether a read would currently succeed, **without** registering the read
+    /// as a dependency of the evaluating node (unlike [`read`](Self::read),
+    /// which registers even when `NotReady`).
+    #[doc(hidden)]
+    fn peek_ready(&self) -> bool {
+        true
     }
 }
 
@@ -79,6 +95,14 @@ impl<O: Send + Sync + 'static> SignalRead for DerivedSignal<O> {
 
     fn read(&self) -> SignalResult<SignalReadGuard<'_, O>> {
         read_value(self.inner.entity, &self.value)
+    }
+
+    fn source_node(&self) -> Option<Entity> {
+        Some(self.inner.entity)
+    }
+
+    fn peek_ready(&self) -> bool {
+        self.value.read().unwrap().is_some()
     }
 }
 
@@ -136,6 +160,14 @@ impl<O: Send + Sync + 'static> SignalRead for ObserverSignal<O> {
 
     fn read(&self) -> SignalResult<SignalReadGuard<'_, O>> {
         read_value(self.inner.entity, &self.shared.value)
+    }
+
+    fn source_node(&self) -> Option<Entity> {
+        Some(self.inner.entity)
+    }
+
+    fn peek_ready(&self) -> bool {
+        self.shared.value.read().unwrap().is_some()
     }
 }
 
@@ -199,7 +231,8 @@ where
     let mut bound: Option<Entity> = None;
     let mut commands = world.commands();
 
-    let rebinder = spawn_effect(&mut commands, move |mut commands: Commands| {
+    let hint = source.clone();
+    let rebinder = spawn_effect_with_source(&mut commands, &hint, move |commands: &mut Commands| {
         // Read inside the effect so the rebinder is rewired as a subscriber of
         // `source` (even a `NotReady` read registers).
         match source.get() {
@@ -290,6 +323,22 @@ impl<O: Clone + Send + Sync + 'static> SignalRead for Signal<O> {
             Self::Signal(signal) => signal.read(),
             Self::Derived(signal) => signal.read(),
             Self::Static(value) => Ok(SignalReadGuard::Borrowed(value)),
+        }
+    }
+
+    fn source_node(&self) -> Option<Entity> {
+        match self {
+            Self::Signal(signal) => signal.source_node(),
+            Self::Derived(signal) => signal.source_node(),
+            Self::Static(_) => None,
+        }
+    }
+
+    fn peek_ready(&self) -> bool {
+        match self {
+            Self::Signal(signal) => signal.peek_ready(),
+            Self::Derived(signal) => signal.peek_ready(),
+            Self::Static(_) => true,
         }
     }
 }

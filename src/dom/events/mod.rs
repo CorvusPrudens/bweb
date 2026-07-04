@@ -324,7 +324,20 @@ where
     E: FromWasmAbi + 'static,
 {
     for (entity, mut handler, node_entity) in &mut handlers {
-        let node = nodes.get(node_entity.0)?;
+        // Per-entity fault tolerance: `Changed` is consumed by this run, so
+        // bailing on one bad target would silently drop every other handler
+        // in the batch — they would never be attached.
+        let node = match nodes.get(node_entity.0) {
+            Ok(node) => node,
+            Err(e) => {
+                log::error!(
+                    "manage_handlers: no event target for `{}` handler on {entity} (target {}): {e}",
+                    handler.event,
+                    node_entity.0
+                );
+                continue;
+            }
+        };
 
         let options = AddEventListenerOptions::new();
 

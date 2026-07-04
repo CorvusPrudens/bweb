@@ -1,6 +1,6 @@
 use super::*;
 use crate::cleanup::CleanupPlugin;
-use crate::signal2::graph::{PendingDirty, SignalSystem};
+use crate::signal2::graph::{EffectClosure, PendingDirty, SignalSystem, spawn_effect_with_source};
 use bevy_ecs::prelude::*;
 use bevy_query_observer::Start;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -16,8 +16,11 @@ fn drive_input<O: Send + Sync + 'static>(app: &mut App, input: &DerivedSignal<O>
         .push(input.inner.entity);
 }
 
+/// Counts effect/system nodes (sinks, rebinders, polls) — the node kinds that
+/// back reactive insertions. Closure-valued nodes (`derive`/`memo`) and inputs
+/// are deliberately excluded, as before the sink-closure conversion.
 fn signal_node_count(world: &mut World) -> usize {
-    let mut q = world.query::<&SignalSystem>();
+    let mut q = world.query_filtered::<Entity, Or<(With<SignalSystem>, With<EffectClosure>)>>();
     q.iter(world).count()
 }
 
@@ -324,7 +327,10 @@ fn poll_runs_every_flush_and_prunes() {
     // No external change: the poll re-runs but prunes — downstream stays put.
     app.update();
     assert!(poll_runs.load(Ordering::Relaxed) > poll_after_first);
-    assert_eq!(downstream_runs.load(Ordering::Relaxed), downstream_after_first);
+    assert_eq!(
+        downstream_runs.load(Ordering::Relaxed),
+        downstream_after_first
+    );
 
     // The resource changes with no lifecycle event; the poll still catches it.
     app.world_mut().resource_mut::<External>().0 = 9;
@@ -334,6 +340,36 @@ fn poll_runs_every_flush_and_prunes() {
         downstream_runs.load(Ordering::Relaxed),
         downstream_after_first + 1
     );
+}
+
+/// A poll's per-pass re-evaluation is not "work": an idle frame must run the
+/// schedule once, not loop to `MAX_SCHEDULE_RUNS`. Only an effect (sink)
+/// evaluation raises `FlushWork` — polls are read-only and would otherwise
+/// saturate `run_react_schedule` on every frame that has any poll node.
+#[test]
+fn poll_only_flush_runs_schedule_once() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+    app.insert_resource(External(1));
+
+    let poll_runs = Arc::new(AtomicUsize::new(0));
+    let world = app.world_mut();
+    let mut commands = world.commands();
+    let _polled = {
+        let runs = poll_runs.clone();
+        commands.poll(move |ext: Res<External>| {
+            runs.fetch_add(1, Ordering::Relaxed);
+            Ok(ext.0)
+        })
+    };
+
+    // Construction frame (node spawn + initial evaluation).
+    app.update();
+    let after_first = poll_runs.load(Ordering::Relaxed);
+
+    // Idle frame: one schedule run, one flush pass, one poll evaluation.
+    app.update();
+    assert_eq!(poll_runs.load(Ordering::Relaxed), after_first + 1);
 }
 
 #[derive(Component, Clone)]
@@ -527,7 +563,9 @@ fn track_on_demand_registers_once() {
         let world = app.world_mut();
         let mut commands = world.commands();
         // Two trackers of `Children` (different output types, same component).
-        let _a = commands.track(|c: Option<&Children>| c.is_some()).watch_entity(e);
+        let _a = commands
+            .track(|c: Option<&Children>| c.is_some())
+            .watch_entity(e);
         let _b = commands
             .track(|c: Option<&Children>| c.map_or(0usize, |c| c.iter().count()))
             .watch_entity(e);
@@ -538,7 +576,9 @@ fn track_on_demand_registers_once() {
     {
         let world = app.world_mut();
         let mut commands = world.commands();
-        let _c = commands.track(|t: Option<&Tag>| t.map(|t| t.0)).watch_entity(e);
+        let _c = commands
+            .track(|t: Option<&Tag>| t.map(|t| t.0))
+            .watch_entity(e);
     }
     app.update();
     assert_eq!(app.world().resource::<TrackedTypes>().0.len(), 2);
@@ -793,7 +833,9 @@ fn gc_no_orphan_observer() {
             let world = app.world_mut();
             let mut commands = world.commands();
             // Handle dropped at the end of this block; the node builds then collects.
-            let _sig = commands.signal(|c: Start<&Count>| c.0).watch_entity(watched);
+            let _sig = commands
+                .signal(|c: Start<&Count>| c.0)
+                .watch_entity(watched);
         }
         app.update();
         app.update();
@@ -1042,9 +1084,7 @@ fn dynamic_watch_follows_source() {
     let count = {
         let world = app.world_mut();
         let mut commands = world.commands();
-        let target = commands
-            .signal(|s: Start<&Sel>| s.0)
-            .watch_entity(selector);
+        let target = commands.signal(|s: Start<&Sel>| s.0).watch_entity(selector);
         commands.signal(|c: Start<&Count>| c.0).watch(target)
     };
 
@@ -1087,9 +1127,7 @@ fn dynamic_watch_waits_for_source() {
     let count = {
         let world = app.world_mut();
         let mut commands = world.commands();
-        let target = commands
-            .signal(|s: Start<&Sel>| s.0)
-            .watch_entity(selector);
+        let target = commands.signal(|s: Start<&Sel>| s.0).watch_entity(selector);
         commands.signal(|c: Start<&Count>| c.0).watch(target)
     };
 
@@ -1162,9 +1200,7 @@ fn dynamic_watch_gc_releases_source() {
     let count = {
         let world = app.world_mut();
         let mut commands = world.commands();
-        let target = commands
-            .signal(|s: Start<&Sel>| s.0)
-            .watch_entity(selector);
+        let target = commands.signal(|s: Start<&Sel>| s.0).watch_entity(selector);
         // The rebinder holds `target`; the test holds only `count`.
         commands.signal(|c: Start<&Count>| c.0).watch(target)
     };
@@ -1234,4 +1270,162 @@ fn track_resource_late_insert() {
     app.insert_resource(Reg(7));
     app.update();
     assert_eq!(reg.read().map(|r| r.0), Ok(7));
+}
+
+/// A sink over a `NotReady` source skips its throwaway initial evaluation
+/// entirely — the subscriber edge is pre-registered instead — and runs for the
+/// first time when the source seeds.
+#[test]
+fn deferred_sink_skips_throwaway_eval() {
+    let mut app = App::new();
+    app.add_plugins(Signal2Plugin);
+
+    let runs = Arc::new(AtomicUsize::new(0));
+
+    // No `Count` yet: the source reads `NotReady` when the sink spawns.
+    let counted = app.world_mut().spawn_empty().id();
+
+    let (source, sink) = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let source = commands
+            .signal(|c: Start<&Count>| c.0)
+            .watch_entity(counted);
+        let sink = {
+            let source = source.clone();
+            let runs = runs.clone();
+            spawn_effect_with_source(&mut commands, &source.clone(), move |_commands| {
+                runs.fetch_add(1, Ordering::Relaxed);
+                let _ = source.read();
+            })
+        };
+        (source, sink)
+    };
+
+    app.update();
+    // Deferred: the sink body never ran (an eager spawn would have run it once
+    // against the unready source), and the node settled to `Clean`.
+    assert_eq!(runs.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        app.world().get::<NodeStatus>(sink),
+        Some(&NodeStatus::Clean)
+    );
+
+    // Seeding the source wakes the sink through the pre-registered edge.
+    app.world_mut().entity_mut(counted).insert(Count(7));
+    app.update();
+    assert_eq!(runs.load(Ordering::Relaxed), 1);
+    assert_eq!(source.get(), Ok(7));
+}
+
+/// A sink over an already-ready source keeps today's eager behavior: exactly
+/// one initial evaluation, then one per source change.
+#[test]
+fn ready_source_sink_single_initial_eval() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+
+    let runs = Arc::new(AtomicUsize::new(0));
+
+    let world = app.world_mut();
+    let mut commands = world.commands();
+
+    let input = commands.derive(|| Ok(3u32));
+    let host = commands
+        .spawn(input.map({
+            let runs = runs.clone();
+            move |&v: &u32| {
+                runs.fetch_add(1, Ordering::Relaxed);
+                Tag(v)
+            }
+        }))
+        .id();
+
+    app.update();
+    assert_eq!(runs.load(Ordering::Relaxed), 1);
+    assert_eq!(app.world().get::<Tag>(host), Some(&Tag(3)));
+
+    drive_input(&mut app, &input, 9);
+    app.update();
+    assert_eq!(runs.load(Ordering::Relaxed), 2);
+    assert_eq!(app.world().get::<Tag>(host), Some(&Tag(9)));
+}
+
+/// A `track` bound via `watch_bundle` and a sink over it land in the SAME host
+/// bundle, with the sink's hook ordered first: the sink defers against the
+/// still-unbound tracker, and the tracker's seed must wake it (the seed pushes
+/// `PendingDirty` even though the value went straight from unbound to ready).
+#[test]
+fn tracked_bundle_seed_wakes_sink_on_same_host() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+
+    let world = app.world_mut();
+    let mut commands = world.commands();
+
+    let tracked = commands.track(|c: Option<&Count>| c.map(|c| c.0));
+    let host = commands
+        .spawn((
+            // Sink first: its hook (and deferral decision) runs before the
+            // watch binds.
+            tracked.map(|v: &Option<u32>| Tag(v.unwrap_or(0))),
+            Count(5),
+            tracked.watch_bundle(),
+        ))
+        .id();
+
+    app.update();
+    assert_eq!(app.world().get::<Tag>(host), Some(&Tag(5)));
+}
+
+/// A `map_commands` sink can spawn entities from its `Commands` while
+/// producing the bundle (the local queue applies mid-evaluation).
+#[test]
+fn map_commands_spawns_children_during_eval() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+
+    let world = app.world_mut();
+    let mut commands = world.commands();
+
+    let input = commands.derive(|| Ok(2u32));
+    let host = commands
+        .spawn(input.map_commands(|commands: &mut Commands, &v: &u32| {
+            let child = commands.spawn(Count(v)).id();
+            Sel(child)
+        }))
+        .id();
+
+    app.update();
+    let child = app.world().get::<Sel>(host).expect("mapped bundle").0;
+    assert_eq!(app.world().get::<Count>(child).map(|c| c.0), Some(2));
+}
+
+/// Tearing down a deferred sink that never ran cleans its pre-registered edge:
+/// the node count drops, and a later seed of the source is a no-op rather than
+/// a panic or a resurrection.
+#[test]
+fn deferred_sink_teardown_before_first_run() {
+    let mut app = App::new();
+    app.add_plugins((Signal2Plugin, CleanupPlugin));
+
+    let counted = app.world_mut().spawn_empty().id();
+
+    let host = {
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        let source = commands
+            .signal(|c: Start<&Count>| c.0)
+            .watch_entity(counted);
+        commands.spawn(source.map(|&v: &u32| Tag(v))).id()
+    };
+
+    app.update();
+    let before = signal_node_count(app.world_mut());
+    app.world_mut().despawn(host);
+    app.update();
+    assert_eq!(signal_node_count(app.world_mut()), before - 1);
+
+    app.world_mut().entity_mut(counted).insert(Count(3));
+    app.update(); // must not panic
 }

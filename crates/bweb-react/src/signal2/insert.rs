@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::cleanup::ReactiveCleanupExt;
 
 use super::error::SignalError;
-use super::graph::{despawn_node, spawn_effect};
+use super::graph::{despawn_node, spawn_effect_with_source};
 use super::handle::{DerivedSignal, ObserverSignal, SignalRead};
 
 /// Spawns a sink that reads `source` by reference, maps it through `f`, and
@@ -27,7 +27,8 @@ where
     F: Fn(&S::Value) -> O2 + Send + Sync + 'static,
     O2: Bundle + Send + Sync + 'static,
 {
-    spawn_effect(commands, move |mut commands: Commands| {
+    let hint = source.clone();
+    spawn_effect_with_source(commands, &hint, move |commands: &mut Commands| {
         match source.read() {
             Ok(guard) => {
                 let bundle = f(&guard);
@@ -55,10 +56,11 @@ where
     F: Fn(&mut Commands, &S::Value) -> O2 + Send + Sync + 'static,
     O2: Bundle + Send + Sync + 'static,
 {
-    spawn_effect(commands, move |mut commands: Commands| {
+    let hint = source.clone();
+    spawn_effect_with_source(commands, &hint, move |commands: &mut Commands| {
         match source.read() {
             Ok(guard) => {
-                let bundle = f(&mut commands, &guard);
+                let bundle = f(&mut *commands, &guard);
                 commands
                     .entity(host)
                     .reactive_cleanup::<O2>()
@@ -269,7 +271,8 @@ where
         ReactiveInsert {
             spawn: Arc::new(move |commands: &mut Commands, host: Entity| {
                 let source = source.clone();
-                spawn_effect(commands, move |mut commands: Commands| {
+                let hint = source.clone();
+                spawn_effect_with_source(commands, &hint, move |commands: &mut Commands| {
                     match source.read() {
                         Ok(guard) => match &*guard {
                             Some(value) => {

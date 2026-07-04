@@ -19,7 +19,7 @@ use bevy_ecs::{
     component::{ComponentId, Mutable, StorageType},
     lifecycle::{ComponentHook, HookContext},
     prelude::*,
-    schedule::{IntoScheduleConfigs, Schedules},
+    schedule::IntoScheduleConfigs,
     world::DeferredWorld,
 };
 use bevy_platform::collections::HashSet;
@@ -29,7 +29,7 @@ use std::sync::{Arc, RwLock};
 use super::gc::SignalGc;
 use super::graph::{NodeStatus, PendingDirty, Sources, Subscribers};
 use super::handle::{DerivedSignal, SignalInner};
-use super::{ReactSchedule, ReactiveSystems};
+use super::ReactiveSystems;
 
 /// A node watching resource `R`, plus the writer that delivers a fresh clone
 /// into the node's value cell.
@@ -110,11 +110,9 @@ fn bootstrap<R: Resource + Clone>(world: &mut World) {
         return;
     }
     world.init_resource::<TrackedResourceNodes<R>>();
-    world
-        .resource_mut::<Schedules>()
-        .get_mut(ReactSchedule)
-        .expect("ReactSchedule is initialised by Signal2Plugin")
-        .add_systems(scan_resource::<R>.in_set(ReactiveSystems::Scan));
+    super::register_scanner(world, |schedule| {
+        schedule.add_systems(scan_resource::<R>.in_set(ReactiveSystems::Scan));
+    });
 }
 
 /// The `track_resource` constructor, added to `Commands`.
@@ -147,6 +145,9 @@ impl TrackResource for Commands<'_, '_> {
                 bootstrap::<R>(world);
                 if let Some(resource) = world.get_resource::<R>() {
                     *value.write().unwrap() = Some(resource.clone());
+                    // Wake subscribers that read `NotReady` before this seed
+                    // (e.g. deferred sinks with a pre-registered edge).
+                    world.resource_mut::<PendingDirty>().0.push(node);
                 }
                 let write: Box<dyn Fn(&R) + Send + Sync> = Box::new({
                     let value = value.clone();

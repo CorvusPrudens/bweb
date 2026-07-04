@@ -34,7 +34,7 @@ pub(crate) use gc::live_node_count;
 use gc::gc_pass;
 #[cfg(feature = "dev")]
 use graph::FlushMetrics;
-use graph::{ChangedNodes, PendingDirty, flush};
+use graph::{ChangedNodes, FlushWork, PendingDirty, flush};
 use track::TrackedTypes;
 
 pub use error::{SignalError, SignalReadGuard, SignalResult};
@@ -61,6 +61,55 @@ pub enum ReactiveSystems {
     Settle,
 }
 
+/// Scanner registrations that arrived while [`ReactSchedule`] was executing.
+///
+/// `run_schedule` takes the schedule out of the `Schedules` registry for the
+/// duration of the run, so a `track`/`track_resource` bootstrap reached from a
+/// node evaluated *inside* the flush cannot add its scanner system directly.
+/// [`register_scanner`] parks the registration here; [`run_react_schedule`]
+/// drains it around each run.
+#[derive(Resource, Default)]
+pub(crate) struct PendingScanners(Vec<Box<dyn FnOnce(&mut World) + Send + Sync>>);
+
+/// Adds a scanner system to [`ReactSchedule`], deferring the registration when
+/// the schedule is currently executing. The caller must have seeded the
+/// signal's value itself (and pushed [`PendingDirty`]) — a deferred scanner
+/// only misses in-place mutations that land before the next
+/// [`run_react_schedule`], which then scans them normally.
+pub(crate) fn register_scanner(
+    world: &mut World,
+    add: impl FnOnce(&mut bevy_ecs::schedule::Schedule) + Send + Sync + 'static,
+) {
+    let mut schedules = world.resource_mut::<bevy_ecs::schedule::Schedules>();
+    if let Some(schedule) = schedules.get_mut(ReactSchedule) {
+        add(schedule);
+    } else {
+        world
+            .resource_mut::<PendingScanners>()
+            .0
+            .push(Box::new(move |world: &mut World| {
+                let mut schedules = world.resource_mut::<bevy_ecs::schedule::Schedules>();
+                let schedule = schedules
+                    .get_mut(ReactSchedule)
+                    .expect("ReactSchedule returns to the registry after its run");
+                add(schedule);
+            }));
+    }
+}
+
+/// Applies scanner registrations parked while the schedule was running.
+fn drain_pending_scanners(world: &mut World) {
+    loop {
+        let pending = core::mem::take(&mut world.resource_mut::<PendingScanners>().0);
+        if pending.is_empty() {
+            break;
+        }
+        for register in pending {
+            register(world);
+        }
+    }
+}
+
 /// Wires up the signal2 reactive runtime.
 pub struct Signal2Plugin;
 
@@ -72,6 +121,8 @@ impl Plugin for Signal2Plugin {
         app.init_resource::<PendingDirty>()
             .init_resource::<ChangedNodes>()
             .init_resource::<TrackedTypes>()
+            .init_resource::<PendingScanners>()
+            .init_resource::<FlushWork>()
             .init_resource::<SweepFrequency>()
             .init_schedule(ReactSchedule)
             .configure_sets(
@@ -84,11 +135,27 @@ impl Plugin for Signal2Plugin {
     }
 }
 
-/// Runs [`ReactSchedule`] once per frame. `flush` already iterates to quiescence
-/// internally, so a single run per frame suffices.
+/// Upper bound on schedule re-runs per frame; a converging cascade breaks out
+/// as soon as a flush does no work.
+const MAX_SCHEDULE_RUNS: usize = 8;
+
+/// Runs [`ReactSchedule`] until quiescent (bounded). The flush iterates to a
+/// fixpoint internally, but **scanners** run only once per schedule run — and
+/// sinks evaluated inside the flush can mutate tracked components *after* this
+/// run's scan. Without a follow-up run those changes would sit unseen until
+/// the next external event, which may never arrive (idle/headless). Re-running
+/// while the flush reports work settles every cascade within the frame; idle
+/// frames still cost a single run.
 #[cfg(not(feature = "dev"))]
 fn run_react_schedule(world: &mut World) {
-    world.run_schedule(ReactSchedule);
+    drain_pending_scanners(world);
+    for _ in 0..MAX_SCHEDULE_RUNS {
+        world.run_schedule(ReactSchedule);
+        drain_pending_scanners(world);
+        if !world.resource::<FlushWork>().0 {
+            break;
+        }
+    }
 }
 
 /// `dev` build: times the whole [`ReactSchedule`] run (change scanners + graph
@@ -97,16 +164,27 @@ fn run_react_schedule(world: &mut World) {
 /// quiet.
 #[cfg(feature = "dev")]
 fn run_react_schedule(world: &mut World) {
+    drain_pending_scanners(world);
     let start = bevy_platform::time::Instant::now();
-    world.run_schedule(ReactSchedule);
+    let mut passes = 0usize;
+    let mut runs = 0usize;
+    for _ in 0..MAX_SCHEDULE_RUNS {
+        world.run_schedule(ReactSchedule);
+        drain_pending_scanners(world);
+        runs += 1;
+        passes += world
+            .get_resource::<FlushMetrics>()
+            .map(|m| m.passes)
+            .unwrap_or(0);
+        if !world.resource::<FlushWork>().0 {
+            break;
+        }
+    }
     let elapsed = start.elapsed();
 
-    let passes = world
-        .get_resource::<FlushMetrics>()
-        .map(|m| m.passes)
-        .unwrap_or(0);
-
     if passes > 0 {
-        log::debug!("signal2 ReactSchedule settled in {elapsed:?} over {passes} pass(es)");
+        log::debug!(
+            "signal2 ReactSchedule settled in {elapsed:?} over {passes} pass(es), {runs} run(s)"
+        );
     }
 }
