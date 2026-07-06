@@ -23,6 +23,7 @@ impl SetTitle {
         ev: On<Self>,
         head: Single<Entity, With<Head>>,
         title: Query<Entity, With<Title>>,
+        document: Single<&Document>,
         mut commands: Commands,
     ) {
         let value = ev.0.clone();
@@ -33,6 +34,12 @@ impl SetTitle {
                 .despawn_children()
                 .with_child(Text::new(value));
         } else {
+            // clean up title elements that weren't placed by bweb, since they
+            // would otherwise hog the title value
+            while let Some(stale) = document.query_selector("head > title").ok().flatten() {
+                stale.remove();
+            }
+
             commands.spawn((ChildOf(*head), Title, children![Text::new(value)]));
         }
     }
