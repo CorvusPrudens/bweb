@@ -38,7 +38,8 @@ impl Plugin for RouterPlugin {
             .init_resource::<RouteParams>()
             .init_resource::<NavigationGuard>()
             .add_observer(on_proceed)
-            .add_observer(on_cancel);
+            .add_observer(on_cancel)
+            .add_observer(open_new_tab);
 
         #[cfg(all(debug_assertions, feature = "debug"))]
         app.add_systems(
@@ -248,6 +249,12 @@ pub struct NavigationProceed;
 #[derive(Event)]
 pub struct NavigationCancel;
 
+/// Open `url` in a new browser tab/window. The router observes this and calls
+/// `window.open(url, "_blank")`, centralizing the one raw platform call so
+/// callers just trigger the event instead of reaching for `web_sys` directly.
+#[derive(Event)]
+pub struct OpenNewTab(pub String);
+
 /// Register a predicate that can veto navigations. If any registered blocker
 /// returns `true`, the navigation is parked and [`NavigationBlocked`] is fired
 /// instead of committing.
@@ -377,6 +384,16 @@ fn on_proceed(
 
 fn on_cancel(_: On<NavigationCancel>, mut guard: ResMut<NavigationGuard>) {
     guard.pending = None;
+}
+
+/// Open the triggered URL in a new browser tab. Unlike push navigations this
+/// bypasses the guard and history entirely, since a new tab leaves the current
+/// document untouched.
+fn open_new_tab(ev: On<OpenNewTab>, window: Single<&Window>) {
+    let url = &ev.0;
+    if let Err(e) = window.open_with_url_and_target(url, "_blank") {
+        log::error!("failed to open `{url}` in a new tab: {e:?}");
+    }
 }
 
 #[derive(Clone)]

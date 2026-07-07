@@ -23,7 +23,7 @@ pub mod prelude {
     pub use crate::time::sleep;
 
     #[cfg(feature = "router")]
-    pub use crate::router::{Route, query::QueryParams};
+    pub use crate::router::{OpenNewTab, Route, query::QueryParams};
 
     pub use crate::BwebPlugins;
 }
