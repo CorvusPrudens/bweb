@@ -3,7 +3,7 @@ use crate::dom::{DomSystems, events::Events};
 use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
-use bevy_ecs::system::SystemParam;
+use bevy_ecs::system::{SystemId, SystemParam};
 use bevy_platform::collections::HashMap;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -35,7 +35,10 @@ impl Plugin for RouterPlugin {
                         .before(DomSystems::Attach),
                 ),
             )
-            .init_resource::<RouteParams>();
+            .init_resource::<RouteParams>()
+            .init_resource::<NavigationGuard>()
+            .add_observer(on_proceed)
+            .add_observer(on_cancel);
 
         #[cfg(all(debug_assertions, feature = "debug"))]
         app.add_systems(
@@ -68,7 +71,11 @@ impl Pathname {
     }
 }
 
-fn initialize_router(window: Single<(Entity, &Window)>, mut commands: Commands) -> Result {
+fn initialize_router(
+    window: Single<(Entity, &Window)>,
+    mut guard: ResMut<NavigationGuard>,
+    mut commands: Commands,
+) -> Result {
     let (window_entity, window) = window.into_inner();
 
     commands.spawn((
@@ -76,15 +83,19 @@ fn initialize_router(window: Single<(Entity, &Window)>, mut commands: Commands) 
         ev::pop_state(
             |_: Ev<web_sys::PopStateEvent>,
              window: Single<&Window>,
-             mut pathname: ResMut<Pathname>,
-             mut params: ResMut<query::QueryParams>| {
-                let location = window.location();
-                let base = location.href().unwrap();
-                let url = web_sys::Url::new(&base).unwrap();
-                let new_pathname = url.pathname();
-                params.update(&url);
+             mut commands: Commands|
+             -> Result {
+                let base = window.location().href().js_err()?;
+                let url = web_sys::Url::new(&base).js_err()?;
+                let new_href = url.href();
+                let new_path = url.pathname();
 
-                pathname.update(new_pathname);
+                // The browser has already moved history; defer the decision to
+                // the guard, which either commits or parks it and re-pushes our
+                // prior location so the address bar stays honest.
+                commands.queue(move |world: &mut World| resolve_pop(world, new_href, new_path));
+
+                Ok(())
             },
         ),
     ));
@@ -93,6 +104,8 @@ fn initialize_router(window: Single<(Entity, &Window)>, mut commands: Commands) 
     let base = location.href().js_err()?;
     let url = web_sys::Url::new(&base).js_err()?;
     let pathname = url.pathname();
+
+    guard.current_href = base;
 
     commands.insert_resource(Pathname {
         pathname,
@@ -148,24 +161,13 @@ fn hook_into_anchors(
             RouterLink,
             EventOf(entity),
             ev::click(
-                move |ev: Ev<web_sys::PointerEvent>,
-                      window: Single<&Window>,
-                      mut pathname: ResMut<Pathname>,
-                      mut params: ResMut<query::QueryParams>| {
+                move |ev: Ev<web_sys::PointerEvent>, mut commands: Commands| {
                     if ev.ctrl_key() || ev.meta_key() {
                         return;
                     }
 
                     ev.prevent_default();
-                    window
-                        .history()
-                        .unwrap()
-                        .push_state_with_url(&JsValue::NULL, "", Some(&href))
-                        .unwrap();
-
-                    pathname.update(path.clone());
-                    // TODO: may not properly capture query params in links
-                    params.clear();
+                    request_push(&mut commands, href.clone(), path.clone());
                 },
             ),
         ));
@@ -177,16 +179,13 @@ fn hook_into_anchors(
 #[derive(SystemParam)]
 pub struct Navigator<'w, 's> {
     window: Single<'w, 's, &'static Window>,
-    pathname: ResMut<'w, Pathname>,
-    params: ResMut<'w, query::QueryParams>,
+    commands: Commands<'w, 's>,
 }
 
 #[cfg(feature = "debug")]
 impl std::fmt::Debug for Navigator<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Navigator")
-            .field("pathname", &*self.pathname)
-            .finish_non_exhaustive()
+        f.debug_struct("Navigator").finish_non_exhaustive()
     }
 }
 
@@ -202,19 +201,182 @@ impl<'w, 's> Navigator<'w, 's> {
         }
 
         let url = web_sys::Url::new_with_base(href, &base).js_err()?;
-        let href = url.href();
-        let path = url.pathname();
-
-        self.window
-            .history()
-            .js_err()?
-            .push_state_with_url(&JsValue::NULL, "", Some(&href))
-            .js_err()?;
-        self.pathname.update(path.clone());
-        self.params.update(&url);
+        // Route through the guard rather than committing directly, so unsaved
+        // work can veto or defer the navigation.
+        request_push(&mut self.commands, url.href(), url.pathname());
 
         Ok(())
     }
+}
+
+/// Central navigation choke point. Every navigation resolves through here:
+/// app-registered blocker predicates (see [`NavigationGuardExt`]) decide whether
+/// it commits immediately or is parked as [`Self::pending`] until the app
+/// triggers [`NavigationProceed`] or [`NavigationCancel`].
+#[derive(Resource, Default)]
+pub struct NavigationGuard {
+    blockers: Vec<SystemId<(), bool>>,
+    pending: Option<NavigationIntent>,
+    /// The full href the user is currently on. Tracked here because on
+    /// `popstate` the browser has already discarded the prior location and
+    /// [`Pathname`] only retains a bare pathname (no host/query).
+    current_href: String,
+}
+
+/// A navigation intercepted and parked awaiting an app-level decision.
+#[derive(Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+struct NavigationIntent {
+    href: String,
+    path: String,
+}
+
+/// Fired when a registered blocker vetoes a navigation. The app resolves it by
+/// triggering [`NavigationProceed`] (commit) or [`NavigationCancel`] (stay).
+#[derive(Event, Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+pub struct NavigationBlocked {
+    pub href: String,
+    pub path: String,
+}
+
+/// Commit the parked navigation.
+#[derive(Event)]
+pub struct NavigationProceed;
+
+/// Drop the parked navigation.
+#[derive(Event)]
+pub struct NavigationCancel;
+
+/// Register a predicate that can veto navigations. If any registered blocker
+/// returns `true`, the navigation is parked and [`NavigationBlocked`] is fired
+/// instead of committing.
+pub trait NavigationGuardExt {
+    fn add_navigation_blocker<M>(
+        &mut self,
+        blocker: impl IntoSystem<(), bool, M> + 'static,
+    ) -> &mut Self;
+}
+
+impl NavigationGuardExt for App {
+    fn add_navigation_blocker<M>(
+        &mut self,
+        blocker: impl IntoSystem<(), bool, M> + 'static,
+    ) -> &mut Self {
+        self.init_resource::<NavigationGuard>();
+        let id = self.world_mut().register_system(blocker);
+        self.world_mut()
+            .resource_mut::<NavigationGuard>()
+            .blockers
+            .push(id);
+        self
+    }
+}
+
+/// Run every registered blocker; `true` if any vetoes the navigation.
+fn blocked(world: &mut World) -> bool {
+    let ids = world.resource::<NavigationGuard>().blockers.clone();
+    ids.into_iter()
+        .any(|id| world.run_system(id).unwrap_or(false))
+}
+
+/// Push a new history entry for `href` (used by anchor/`navigate` commits and
+/// when proceeding a parked intent).
+fn push_history(href: &str) {
+    if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+        let _ = history.push_state_with_url(&JsValue::NULL, "", Some(href));
+    }
+}
+
+/// Update the in-app router state (params + pathname + tracked href). Does not
+/// touch browser history.
+fn commit_state(world: &mut World, href: &str, path: &str) {
+    if let Ok(url) = web_sys::Url::new(href) {
+        world.resource_mut::<query::QueryParams>().update(&url);
+    }
+    world.resource_mut::<Pathname>().update(path.to_string());
+    world.resource_mut::<NavigationGuard>().current_href = href.to_string();
+}
+
+/// Commit a push-style navigation (anchor / `navigate`, and proceeding a parked
+/// intent): a new history entry plus the router state update.
+fn commit_push(world: &mut World, href: &str, path: &str) {
+    push_history(href);
+    commit_state(world, href, path);
+}
+
+/// Commit a clean back/forward: the browser already moved history, so only the
+/// router state is updated.
+fn commit_soft(world: &mut World, href: &str, path: &str) {
+    commit_state(world, href, path);
+}
+
+/// Entry point for push-style navigations (anchor click, `Navigator::navigate`).
+/// Commits immediately when unblocked; otherwise parks the intent and fires
+/// [`NavigationBlocked`].
+fn request_push(commands: &mut Commands, href: String, path: String) {
+    commands.queue(move |world: &mut World| {
+        if world.resource::<NavigationGuard>().pending.is_some() {
+            // A decision is already in flight; coalesce.
+            return;
+        }
+        if !blocked(world) {
+            commit_push(world, &href, &path);
+            return;
+        }
+        world.resource_mut::<NavigationGuard>().pending = Some(NavigationIntent {
+            href: href.clone(),
+            path: path.clone(),
+        });
+        world.trigger(NavigationBlocked { href, path });
+    });
+}
+
+/// Entry point for back/forward navigations. The browser has already moved, so
+/// when blocked we re-push the prior location to keep the address bar honest
+/// until the app decides.
+fn resolve_pop(world: &mut World, new_href: String, new_path: String) {
+    let prior = world.resource::<NavigationGuard>().current_href.clone();
+
+    if world.resource::<NavigationGuard>().pending.is_some() {
+        // User pressed Back again while a decision is pending; keep them put.
+        push_history(&prior);
+        return;
+    }
+    if !blocked(world) {
+        commit_soft(world, &new_href, &new_path);
+        return;
+    }
+
+    push_history(&prior);
+    world.resource_mut::<NavigationGuard>().pending = Some(NavigationIntent {
+        href: new_href.clone(),
+        path: new_path.clone(),
+    });
+    world.trigger(NavigationBlocked {
+        href: new_href,
+        path: new_path,
+    });
+}
+
+/// Commit the parked navigation. Always a push: a push intent never touched
+/// history, and a `Pop` intent's prior was re-pushed at block time, so the
+/// target must now be pushed. (A confirmed back thus becomes a forward push,
+/// with the caveat that the history stack gains a duplicate entry.)
+fn on_proceed(
+    _: On<NavigationProceed>,
+    mut guard: ResMut<NavigationGuard>,
+    mut commands: Commands,
+) {
+    if let Some(intent) = guard.pending.take() {
+        commands.queue(move |world: &mut World| {
+            commit_push(world, &intent.href, &intent.path);
+        });
+    }
+}
+
+fn on_cancel(_: On<NavigationCancel>, mut guard: ResMut<NavigationGuard>) {
+    guard.pending = None;
 }
 
 #[derive(Clone)]
