@@ -260,7 +260,7 @@ pub mod ev {
     handler! { key_down, "keydown", web_sys::KeyboardEvent }
     handler! { focus, "focus", web_sys::FocusEvent }
     handler! { blur, "blur", web_sys::FocusEvent }
-    handler! { input, "input", web_sys::InputEvent }
+    handler! { input, "input", web_sys::Event }
     handler! { change, "change", web_sys::Event }
     handler! { wheel, "wheel", web_sys::WheelEvent }
 }
