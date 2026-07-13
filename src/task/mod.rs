@@ -39,6 +39,19 @@ impl TaskWorld {
             })
     }
 
+    /// Run a one-shot system with optional schedule triggering.
+    pub fn run_trigger<S, O, M>(&mut self, trigger: bool, system: S) -> Result<O>
+    where
+        S: SystemOnceFunction<M, In = (), Out: IntoResult<O>>,
+        S::Param: 'static,
+    {
+        self.with_trigger(trigger, |world| world.run_once(system))
+            .map_err(|e| match e {
+                RunSystemError::Failed(f) => f,
+                RunSystemError::Skipped(s) => s.into(),
+            })
+    }
+
     /// Run a closure with access to the world.
     ///
     /// This will unconditionally trigger a schedule run.
