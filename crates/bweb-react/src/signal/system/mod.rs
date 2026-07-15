@@ -1,7 +1,7 @@
 use bevy_app::prelude::*;
 use bevy_ecs::{
     prelude::*,
-    system::{SystemChangeTick, SystemId},
+    system::{RegisteredSystemError, SystemChangeTick, SystemId},
 };
 use std::{
     any::Any,
@@ -186,8 +186,14 @@ pub(crate) fn evaluate_memo(world: &mut World, memo: Entity) -> bool {
         container.0 = Some(state);
     }
 
-    if let Err(e) = result {
-        log::error!("Failed to run signal system: {e}");
+    match result {
+        Ok(()) => {}
+        Err(RegisteredSystemError::Skipped(_)) => {
+            log::info!("Skipped signal system evaluation {memo:?}");
+        }
+        Err(e) => {
+            log::error!("Failed to run signal system {memo:?}: {e}");
+        }
     }
 
     reacted
