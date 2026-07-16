@@ -66,4 +66,5 @@ features = [
     "Navigator",
     "SubmitEvent",
     "AddEventListenerOptions",
+    "Performance",
 ]
