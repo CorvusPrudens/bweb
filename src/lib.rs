@@ -6,6 +6,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::type_complexity)]
 
+pub mod animation;
 pub mod dom;
 pub mod js_err;
 pub mod relative_mouse;
@@ -37,5 +38,6 @@ bevy_app::plugin_group! {
         relative_mouse:::RelativeMousePlugin,
         #[cfg(feature = "router")]
         router:::RouterPlugin,
+        animation:::AnimationsPlugin
     }
 }
