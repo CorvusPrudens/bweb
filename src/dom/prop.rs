@@ -10,7 +10,12 @@ impl Plugin for PropPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             PostUpdate,
-            (Value::resolve_props, Checked::resolve_props)
+            (
+                Value::resolve_props,
+                Checked::resolve_props,
+                Selected::resolve_props,
+                TextContent::resolve_props,
+            )
                 .after(DomSystems::Insert)
                 .before(DomSystems::Attach),
         );
@@ -82,3 +87,4 @@ macro_rules! prop {
 prop!(ValueProp, Value, "value", String);
 prop!(CheckedProp, Checked, "checked", bool);
 prop!(SelectedProp, Selected, "selected", bool);
+prop!(TextContentProp, TextContent, "textContent", String);
