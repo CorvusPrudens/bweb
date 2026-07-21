@@ -97,7 +97,7 @@ fn start_and_stop_animation_callback(
                     let world = app.world_mut();
                     let now = window.performance().unwrap().now();
                     world.resource_scope::<AnimationTime, _>(|world, mut time| {
-                        world.insert_resource(AnimationDelta(now - time.0));
+                        world.insert_resource(AnimationDelta((now - time.0) / 1000.0));
                         time.0 = now;
                     });
                     world.run_schedule(PreAnimationSchedule);
