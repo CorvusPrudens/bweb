@@ -42,6 +42,9 @@ gloo-timers = { version = "0.3.0", features = ["futures"] }
 version = "0.3.85"
 features = [
     "Window",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
     "Element",
     "DomRect",
     "HtmlElement",

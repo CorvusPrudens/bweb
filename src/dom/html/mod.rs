@@ -193,6 +193,7 @@ impl Node {
 pub struct HtmlElementName(pub &'static str);
 
 impl HtmlElementName {
+    /// Drop the element this name created, so a new name builds a new one.
     fn on_replace_hook(mut world: DeferredWorld, context: HookContext) {
         if let Ok(mut entity) = world.commands().get_entity(context.entity) {
             entity.try_remove::<(
@@ -200,6 +201,7 @@ impl HtmlElementName {
                 EventTarget,
                 HtmlElement,
                 Element,
+                SvgElement,
                 HtmlInputElement,
                 HtmlTextAreaElement,
                 HtmlSelectElement,

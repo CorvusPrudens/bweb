@@ -264,6 +264,8 @@ pub mod ev {
     handler! { input, "input", web_sys::Event }
     handler! { change, "change", web_sys::Event }
     handler! { wheel, "wheel", web_sys::WheelEvent }
+    handler! { load, "load", web_sys::Event }
+    handler! { error, "error", web_sys::Event }
 }
 
 #[derive(Component)]

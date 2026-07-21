@@ -22,7 +22,27 @@ impl Plugin for SvgPlugin {
 #[cfg_attr(feature = "debug", derive(Debug))]
 #[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
 #[cfg_attr(feature = "reflect", reflect(Component))]
+#[component(on_replace = Self::on_replace_hook)]
 pub struct SvgElementName(pub &'static str);
+
+impl SvgElementName {
+    /// Drop the element this name created, mirroring
+    /// [`HtmlElementName`](super::HtmlElementName).
+    fn on_replace_hook(
+        mut world: bevy_ecs::world::DeferredWorld,
+        context: bevy_ecs::lifecycle::HookContext,
+    ) {
+        if let Ok(mut entity) = world.commands().get_entity(context.entity) {
+            entity.try_remove::<(
+                super::Node,
+                super::EventTarget,
+                super::Element,
+                super::SvgElement,
+                super::HtmlElement,
+            )>();
+        }
+    }
+}
 
 fn inject_svg_element(
     elements: Query<(Entity, &SvgElementName), Without<super::Node>>,
