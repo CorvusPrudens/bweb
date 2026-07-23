@@ -1,13 +1,14 @@
 use bevy_app::prelude::*;
 use bevy_ecs::{
-    change_detection::MaybeLocation,
     prelude::*,
     query::{QueryData, ROQueryItem, ReadOnlyQueryData},
     relationship::Relationship,
     schedule::ScheduleLabel,
 };
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "dev")]
+use bevy_ecs::change_detection::MaybeLocation;
+#[cfg(feature = "dev")]
 use bevy_platform::collections::HashSet;
 
 use crate::prelude::SQuery;
@@ -55,7 +56,7 @@ impl Plugin for ReactPlugin {
 pub struct Reactions {
     reaction_limit: usize,
     count: usize,
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "dev")]
     locations: HashSet<MaybeLocation>,
 }
 
@@ -70,21 +71,21 @@ impl Reactions {
         Self {
             reaction_limit,
             count: 0,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "dev")]
             locations: Default::default(),
         }
     }
 
-    #[cfg_attr(debug_assertions, track_caller)]
+    #[cfg_attr(feature = "dev", track_caller)]
     pub fn increment(&mut self) {
         self.count += 1;
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "dev")]
         self.locations.insert(MaybeLocation::caller());
     }
 
     fn clear(&mut self) {
         self.count = 0;
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "dev")]
         self.locations.clear();
     }
 }
