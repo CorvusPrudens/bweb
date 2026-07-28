@@ -65,6 +65,7 @@ features = [
     "Location",
     "PopStateEvent",
     "KeyboardEvent",
+    "DragEvent",
     "SvgElement",
     "Navigator",
     "SubmitEvent",

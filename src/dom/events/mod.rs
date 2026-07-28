@@ -266,6 +266,7 @@ pub mod ev {
     handler! { wheel, "wheel", web_sys::WheelEvent }
     handler! { load, "load", web_sys::Event }
     handler! { error, "error", web_sys::Event }
+    handler! { drag_start, "dragstart", web_sys::DragEvent }
 }
 
 #[derive(Component)]
