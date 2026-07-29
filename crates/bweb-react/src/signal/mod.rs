@@ -199,7 +199,6 @@ impl<T: Clone + Bundle> DerivedSignal<T> {
         let value = any.downcast_ref::<T>().unwrap().clone();
         commands.reactive_cleanup::<T>().insert(value);
     }
-
 }
 
 impl<T> DerivedSignal<T> {
@@ -381,7 +380,7 @@ impl<O: Clone + Send + Sync + 'static> DerivedSignal<O> {
 }
 
 impl<O: PartialEq + Clone + Send + Sync + 'static> DerivedSignal<O> {
-    pub fn memo<S, M>(mut commands: Commands, system: S) -> Self
+    pub fn poll<S, M>(mut commands: Commands, system: S) -> Self
     where
         S: IntoSystem<(), O, M> + Send + Sync + 'static,
         S::System: ReadOnlySystem,

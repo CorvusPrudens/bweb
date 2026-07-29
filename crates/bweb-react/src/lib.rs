@@ -192,8 +192,10 @@ pub trait SignalExt {
         S::System: ReadOnlySystem,
         O: Clone + Send + Sync + 'static;
 
+    /// Run this system every reactive update, yielding a new value
+    /// when it's different from the previous one.
     #[must_use]
-    fn memo<S, O, M>(&mut self, system: S) -> signal::DerivedSignal<O>
+    fn poll<S, O, M>(&mut self, system: S) -> signal::DerivedSignal<O>
     where
         S: IntoSystem<(), O, M> + Send + Sync + 'static,
         S::System: ReadOnlySystem,
@@ -248,13 +250,13 @@ impl SignalExt for Commands<'_, '_> {
         signal::DerivedSignal::new(self.reborrow(), system)
     }
 
-    fn memo<S, O, M>(&mut self, system: S) -> signal::DerivedSignal<O>
+    fn poll<S, O, M>(&mut self, system: S) -> signal::DerivedSignal<O>
     where
         S: IntoSystem<(), O, M> + Send + Sync + 'static,
         S::System: ReadOnlySystem,
         O: PartialEq + Clone + Send + Sync + 'static,
     {
-        signal::DerivedSignal::memo(self.reborrow(), system)
+        signal::DerivedSignal::poll(self.reborrow(), system)
     }
 
     fn has<C: Component>(&mut self, target: Entity) -> prelude::ReadSignal<bool> {
@@ -440,7 +442,7 @@ mod test {
 
         let mut commands = world.commands();
         let test_sig =
-            commands.memo(move |q: Query<&TestData>| q.get(test_entity).unwrap().clone());
+            commands.poll(move |q: Query<&TestData>| q.get(test_entity).unwrap().clone());
 
         commands.effect(move |mut res: ResMut<TestRes>| {
             let _test_sig = test_sig.get();

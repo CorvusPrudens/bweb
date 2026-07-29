@@ -150,7 +150,7 @@ where
     // We memoize here so the list effect only
     // runs when our specific target changes.
     let target_sig =
-        commands.memo(move |targets: Res<ListTargets>| targets.0.get(&target).copied());
+        commands.poll(move |targets: Res<ListTargets>| targets.0.get(&target).copied());
     let (esig, set_esig) = signal(HashSet::new());
 
     let effect = commands.effect(move |mut commands: Commands| {
