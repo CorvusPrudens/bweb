@@ -132,7 +132,7 @@ where
     // to, and that read can be stale: the value it wanted may still be sitting in
     // the command queue as an upstream node's output. This is the same debt a
     // mapped signal settles inline when it attaches, except a derived node cannot
-    // pay it until after it has run — so it re-runs once instead.
+    // pay it until after it has run. It re-runs once instead.
     world.resource_mut::<PendingNodes>().0.push(node);
 
     // Two signals can point at the same entity. They are distinct edges, but they

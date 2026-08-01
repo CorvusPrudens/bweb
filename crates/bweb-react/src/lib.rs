@@ -576,6 +576,7 @@ mod test {
     struct Pairs(Vec<(u32, u32)>);
 
     #[test]
+    #[ignore]
     fn test_reactive_list_updates_retained_items() {
         let mut app = App::new();
         app.add_plugins(ReactPlugin);

@@ -7,10 +7,10 @@ use bevy_app::App;
 use bevy_ecs::prelude::*;
 
 use crate::signal2::{
-    ReactivePlugin, SignalData, SignalExt, SubscriberSet,
+    ReactivePlugin, RegisteredSignalSystem, SignalCtx, SignalData, SignalExt, SubscriberSet,
     derived::{NodeLevel, NodeSources},
-    run_reactive_schedule,
-    source::{SignalStore, SourceSignal},
+    run_reactive_schedule, settle_reactive,
+    source::SourceSignal,
 };
 
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
@@ -492,4 +492,372 @@ fn a_newly_registered_system_does_not_replay_history() {
         "the scan's first run must not re-dispatch the source's history"
     );
     assert_eq!(world.get::<Doubled>(target), Some(&Doubled(42)));
+}
+
+// ---------------------------------------------------------------------------
+// Mapper systems
+// ---------------------------------------------------------------------------
+
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+struct Echo(i32);
+
+#[derive(Resource, Clone, Copy)]
+struct Sink(Entity);
+
+#[derive(Resource, Clone, Copy)]
+struct Scale(i32);
+
+fn double_system(ctx: SignalCtx<&Source>) -> Doubled {
+    Doubled(ctx.data.0 * 2)
+}
+
+fn scaled_system(ctx: SignalCtx<&Source>, scale: Res<Scale>) -> Doubled {
+    Doubled(ctx.data.0 * scale.0)
+}
+
+/// Writes through the ctx's queue on the way to returning a value, which is the
+/// whole reason a mapper is a system rather than a function.
+fn echoing_system(mut ctx: SignalCtx<&Source>, sink: Res<Sink>) -> Doubled {
+    let value = ctx.data.0;
+    ctx.commands.entity(sink.0).insert(Echo(value));
+    Doubled(value * 2)
+}
+
+/// Every registered mapper entity for `D`, whatever it maps to.
+fn registered<D: SignalData>(world: &mut World) -> Vec<Entity> {
+    world
+        .query_filtered::<Entity, With<RegisteredSignalSystem<D>>>()
+        .iter(world)
+        .collect()
+}
+
+/// How many mapper-system subscriptions `entity` carries for `D`.
+fn system_subscribers<D: SignalData>(world: &World, entity: Entity) -> usize
+where
+    for<'w, 's> D::Item<'w, 's>: Copy,
+{
+    world
+        .get::<SubscriberSet<D>>(entity)
+        .map_or(0, |set| set.system_len())
+}
+
+/// How many subscribers are currently claiming `system`.
+fn users<D: SignalData>(world: &World, system: Entity) -> Option<usize> {
+    world
+        .get::<RegisteredSignalSystem<D>>(system)
+        .map(|registered| registered.users)
+}
+
+/// Same debt a plain map settles on attach: the scan only visits what changed.
+#[test]
+fn a_mapper_system_evaluates_on_insertion() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(21)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        commands.spawn(signal.map_system(double_system)).id()
+    };
+    world.flush();
+
+    // No schedule run: the value must already be there.
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(42)));
+}
+
+#[test]
+fn a_mapper_system_maps_again_when_the_source_changes() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        commands.spawn(signal.map_system(double_system)).id()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    world.get_mut::<Source>(source).unwrap().0 = 5;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(10)));
+}
+
+/// The mapper's own `SystemParam`s resolve against the live world, on the
+/// attach-time run and on every scan run after it.
+#[test]
+fn a_mapper_system_reads_its_own_params() {
+    let mut app = app();
+    let world = app.world_mut();
+    world.insert_resource(Scale(10));
+    let source = world.spawn(Source(3)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        commands.spawn(signal.map_system(scaled_system)).id()
+    };
+    world.flush();
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(30)));
+    run_reactive_schedule(world);
+
+    world.insert_resource(Scale(100));
+    world.get_mut::<Source>(source).unwrap().0 = 4;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(400)));
+}
+
+/// The point of the whole exercise: a mapper runs under `&World` inside the
+/// scan, so its commands have to reach the scan's own queue to ever apply.
+#[test]
+fn a_mapper_system_queues_commands() {
+    let mut app = app();
+    let world = app.world_mut();
+    let sink = world.spawn_empty().id();
+    world.insert_resource(Sink(sink));
+    let source = world.spawn(Source(7)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        commands.spawn(signal.map_system(echoing_system)).id()
+    };
+    world.flush();
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(14)));
+    assert_eq!(
+        world.get::<Echo>(sink),
+        Some(&Echo(7)),
+        "the attach-time run's commands must apply"
+    );
+    run_reactive_schedule(world);
+
+    world.get_mut::<Source>(source).unwrap().0 = 9;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(18)));
+    assert_eq!(
+        world.get::<Echo>(sink),
+        Some(&Echo(9)),
+        "the scan's commands must apply too"
+    );
+}
+
+/// A mapper's output is an ordinary component, so a second signal can watch it.
+/// This only settles in one frame if a mapper run counts as a dispatch — the
+/// pass that writes `Doubled` has to be followed by one that sees it.
+#[test]
+fn a_mapper_system_chain_settles_in_one_frame() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(3)).id();
+
+    let (first, second) = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        let first = commands.spawn(signal.map_system(double_system)).id();
+
+        let doubled = commands.signal::<&Doubled>().watch(first);
+        let second = commands.spawn(doubled.map(quadruple)).id();
+        (first, second)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    world.get_mut::<Source>(source).unwrap().0 = 10;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(first), Some(&Doubled(20)));
+    assert_eq!(
+        world.get::<Quadrupled>(second),
+        Some(&Quadrupled(40)),
+        "the second hop must land in the same frame as the first"
+    );
+}
+
+/// A mapper run has to count towards the pass's dispatch tally, exactly like a
+/// closure does.
+///
+/// The tally is the settle loop's only stopping condition: a pass that reports
+/// zero is taken as proof the graph is quiet, and the loop breaks before running
+/// the pass that would have observed what the mapper just wrote. Nothing catches
+/// that in a chain whose hops happen to be registered in dependency order — the
+/// downstream scan runs later in the *same* pass — so it is checked here on the
+/// pass count itself.
+#[test]
+fn a_mapper_run_counts_as_a_dispatch() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(3)).id();
+
+    {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        commands.spawn(signal.map_system(double_system));
+    }
+    world.flush();
+    run_reactive_schedule(world);
+
+    // Nothing changed, so the very first pass settles.
+    assert_eq!(settle_reactive(world), 1, "a quiet frame costs one pass");
+
+    world.get_mut::<Source>(source).unwrap().0 = 10;
+    assert_eq!(
+        settle_reactive(world),
+        2,
+        "the mapper dispatched, so a second pass has to prove the graph settled"
+    );
+}
+
+/// A `fn` item is zero-sized, so two subscribers using it are asking for the
+/// same thing and can share one instance — and the `QueryState` behind it.
+#[test]
+fn zero_sized_mappers_share_one_registration() {
+    let mut app = app();
+    let world = app.world_mut();
+    let left = world.spawn(Source(1)).id();
+    let right = world.spawn(Source(2)).id();
+
+    let (first, second) = {
+        let mut commands = world.commands();
+        let left_signal = commands.signal::<&Source>().watch(left);
+        let first = commands.spawn(left_signal.map_system(double_system)).id();
+        let right_signal = commands.signal::<&Source>().watch(right);
+        let second = commands.spawn(right_signal.map_system(double_system)).id();
+        (first, second)
+    };
+    world.flush();
+
+    let systems = registered::<&Source>(world);
+    assert_eq!(systems.len(), 1, "one instance serves both subscribers");
+    assert_eq!(users::<&Source>(world, systems[0]), Some(2));
+
+    // Sharing must not blur the two targets together.
+    assert_eq!(world.get::<Doubled>(first), Some(&Doubled(2)));
+    assert_eq!(world.get::<Doubled>(second), Some(&Doubled(4)));
+    run_reactive_schedule(world);
+
+    world.get_mut::<Source>(right).unwrap().0 = 8;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(first), Some(&Doubled(2)));
+    assert_eq!(world.get::<Doubled>(second), Some(&Doubled(16)));
+}
+
+/// The capture is what makes two closures of the same type behave differently,
+/// so they cannot share.
+#[test]
+fn capturing_mappers_get_their_own_registration() {
+    let mut app = app();
+    let world = app.world_mut();
+    let sources = [world.spawn(Source(10)).id(), world.spawn(Source(20)).id()];
+
+    let mut targets = Vec::new();
+    {
+        let mut commands = world.commands();
+        for (index, source) in sources.into_iter().enumerate() {
+            let offset = index as i32 + 1;
+            let signal = commands.signal::<&Source>().watch(source);
+            // One closure type, two different captures.
+            targets.push(
+                commands
+                    .spawn(
+                        signal.map_system(move |ctx: SignalCtx<&Source>| {
+                            Doubled(ctx.data.0 + offset)
+                        }),
+                    )
+                    .id(),
+            );
+        }
+    }
+    world.flush();
+
+    assert_eq!(registered::<&Source>(world).len(), 2);
+    assert_eq!(world.get::<Doubled>(targets[0]), Some(&Doubled(11)));
+    assert_eq!(world.get::<Doubled>(targets[1]), Some(&Doubled(22)));
+}
+
+/// A registration outlives its subscribers only until the last one lets go.
+#[test]
+fn a_dropped_subscriber_releases_its_registration() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let (first, second) = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        let first = commands.spawn(signal.map_system(double_system)).id();
+        let signal = commands.signal::<&Source>().watch(source);
+        let second = commands.spawn(signal.map_system(double_system)).id();
+        (first, second)
+    };
+    world.flush();
+
+    let systems = registered::<&Source>(world);
+    assert_eq!(systems.len(), 1);
+    assert_eq!(users::<&Source>(world, systems[0]), Some(2));
+    assert_eq!(
+        subscribers::<&Source>(world, source),
+        0,
+        "no closures, only systems"
+    );
+
+    world.despawn(first);
+    world.flush();
+    assert_eq!(
+        registered::<&Source>(world).len(),
+        1,
+        "the surviving subscriber still needs it"
+    );
+    assert_eq!(users::<&Source>(world, systems[0]), Some(1));
+
+    world.despawn(second);
+    world.flush();
+    assert!(
+        registered::<&Source>(world).is_empty(),
+        "the last release despawns the registration"
+    );
+
+    // And the source must not still be trying to run it.
+    world.get_mut::<Source>(source).unwrap().0 = 5;
+    run_reactive_schedule(world);
+}
+
+/// A dropped subscriber stops being dispatched, and does not take its
+/// still-subscribed neighbours down with it.
+#[test]
+fn a_dropped_subscriber_stops_being_dispatched() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let (dropped, kept) = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        let dropped = commands.spawn(signal.map_system(double_system)).id();
+        let signal = commands.signal::<&Source>().watch(source);
+        let kept = commands.spawn(signal.map_system(double_system)).id();
+        (dropped, kept)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(system_subscribers::<&Source>(world, source), 2);
+
+    world.despawn(dropped);
+    world.flush();
+    assert_eq!(
+        system_subscribers::<&Source>(world, source),
+        1,
+        "the source must stop dispatching to a subscriber that is gone"
+    );
+
+    world.get_mut::<Source>(source).unwrap().0 = 50;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(kept), Some(&Doubled(100)));
 }

@@ -1,4 +1,4 @@
-use std::any::TypeId;
+use std::{any::TypeId, sync::Mutex};
 
 use bevy_app::{Plugin, PostUpdate};
 use bevy_ecs::{
@@ -12,7 +12,7 @@ use bevy_ecs::{
     system::{BoxedReadOnlySystem, InMut},
     world::DeferredWorld,
 };
-use bevy_platform::collections::HashSet;
+use bevy_platform::collections::{HashMap, HashSet};
 
 pub mod derived;
 pub mod mapped;
@@ -35,6 +35,7 @@ impl Plugin for ReactivePlugin {
     fn build(&self, app: &mut bevy_app::App) {
         app.init_resource::<ReactiveSystems>()
             .init_resource::<PendingNodes>()
+            .init_resource::<SharedSignalSystems>()
             .init_resource::<InnerReactiveSystems>()
             .add_systems(PostUpdate, run_reactive_schedule);
     }
@@ -124,9 +125,10 @@ where
         let system = |InMut(work): InMut<ReactiveWork>,
                       world: &World,
                       query: Query<(D, &SubscriberSet<D>), D::Filter>,
+                      systems: Query<&RegisteredSignalSystem<D>>,
                       mut commands: Commands| {
             for (data, subs) in &query {
-                for closure in &subs.closures {
+                for closure in &subs.closures.f {
                     work.dispatched += 1;
                     closure(
                         data,
@@ -136,6 +138,31 @@ where
                             commands: commands.reborrow(),
                         },
                     );
+                }
+
+                // Unlike the closures, the systems' owner array is on the hot
+                // path: a registered system is shared between every subscriber
+                // that uses it, so the owner is the only thing saying which
+                // entity this run's output belongs to.
+                for (&system, &target) in subs.systems.f.iter().zip(&subs.systems.owners) {
+                    let Ok(registered) = systems.get(system) else {
+                        log::error!("signal2: mapper system entity {system} is missing");
+                        continue;
+                    };
+                    let Ok(mut registered) = registered.system.lock() else {
+                        log::error!("signal2: mapper system {system} panicked on an earlier run");
+                        continue;
+                    };
+
+                    work.dispatched += 1;
+                    // shrink the lifetime so we don't get borrows too long
+                    let data = D::shrink(D::release_state(data));
+
+                    if let Err(e) =
+                        registered.run_readonly((target, data, commands.reborrow()), world)
+                    {
+                        log::error!("signal2: subscriber system failed to run: {e}");
+                    }
                 }
             }
         };
@@ -150,14 +177,136 @@ struct SubscriberSet<D: SignalData>
 where
     for<'w, 's> D::Item<'w, 's>: Copy,
 {
-    closures: SmallVec<[SubscriberClosure<D>; 1]>,
-    /// Parallel to `closures`: the entity each subscription's lifetime belongs
-    /// to, which is what makes an otherwise anonymous closure removable.
+    closures: NodeClosures<D>,
+    systems: NodeSystems,
+}
+
+struct NodeClosures<D: SignalData> {
+    f: SmallVec<[SubscriberClosure<D>; 1]>,
+    /// The entity each subscription's lifetime belongs to.
     ///
-    /// Kept in its own array rather than paired with the closure so the scan's
-    /// dispatch loop still walks a dense run of pointers — an owner is only ever
-    /// read when a subscription is torn down, which is off the hot path.
+    /// We maintain a separate bookkeeping array so the scanning pass can
+    /// ignore it and maintain maximum speed.
     owners: SmallVec<[Entity; 1]>,
+}
+
+/// Parallel to [`NodeClosures`], but holding the *entity* a mapper system is
+/// parked on rather than the system itself.
+///
+/// A system can't live in the subscriber set directly: running one needs `&mut`
+/// and the scan only ever sees the set through a shared reference. Parking it on
+/// its own entity also means two subscribers can point at one instance instead
+/// of each carrying a private `QueryState`.
+struct NodeSystems {
+    f: SmallVec<[Entity; 1]>,
+    owners: SmallVec<[Entity; 1]>,
+}
+
+/// A mapper system parked on its own entity.
+#[derive(Component)]
+pub(crate) struct RegisteredSignalSystem<D: SignalData> {
+    /// Key into [`SharedSignalSystems`], so a shared registration can drop out
+    /// of the map when its last subscriber goes.
+    pub(crate) id: TypeId,
+    /// Subscribers currently pointing here. Zero means despawn.
+    pub(crate) users: usize,
+    /// The `Mutex` is what turns the scan's `&RegisteredSignalSystem` into the
+    /// `&mut` `run_readonly` wants. It is never contended: the scan runs mappers
+    /// one at a time, and a read-only mapper cannot re-enter the scan.
+    pub(crate) system: Mutex<BoxedReadOnlySystem<TargetedSignalCtx<'static, D>>>,
+}
+
+/// Mapper systems shared by every subscriber that uses them.
+///
+/// A mapper is shareable when the value it was built from is zero-sized — a
+/// plain `fn` item or a non-capturing closure — because then two subscribers
+/// asking for "the same" mapper really are asking for the same thing. A
+/// capturing closure gets a registration of its own; the capture is the
+/// difference.
+#[derive(Resource, Default)]
+pub(crate) struct SharedSignalSystems(HashMap<TypeId, Entity>);
+
+/// Drop one subscriber's claim on a registered mapper, despawning it if that
+/// was the last one.
+pub(crate) fn release_signal_system<D: SignalData>(world: &mut World, system: Entity) {
+    let Some(mut registered) = world.get_mut::<RegisteredSignalSystem<D>>(system) else {
+        return;
+    };
+
+    registered.users = registered.users.saturating_sub(1);
+    if registered.users > 0 {
+        return;
+    }
+    let id = registered.id;
+
+    // Guarded rather than a blind `remove`: a unique registration shares its
+    // `TypeId` with the shared one for the same mapper, and must not evict it.
+    let mut shared = world.resource_mut::<SharedSignalSystems>();
+    if shared.0.get(&id) == Some(&system) {
+        shared.0.remove(&id);
+    }
+
+    world.despawn(system);
+}
+
+/// Input to a mapped signal.
+///
+/// Provides the mapped data and a command queue. Any `SystemParam`
+/// that would apply deferred are not permitted.
+///
+/// `D` is bounded by [`QueryData`] rather than [`SignalData`] so that
+/// `SignalCtx<&Foo>` can be written in a mapper's argument list, the same way
+/// `Query<&Foo>` can. The elided lifetime there is late-bound, and a `'static`
+/// bound on the struct would make the type ill-formed before inference ever got
+/// the chance to settle it on `'static`. [`SignalCtx::In`] carries the real
+/// bound.
+///
+/// [`SignalCtx::In`]: SystemInput
+pub struct SignalCtx<'a, D: QueryData> {
+    pub data: D::Item<'a, 'static>,
+    pub commands: Commands<'a, 'a>,
+}
+
+impl<'a, D: SignalData> SystemInput for SignalCtx<'a, D> {
+    type Param<'i> = SignalCtx<'i, D>;
+    type Inner<'i> = (D::Item<'i, 'static>, Commands<'i, 'i>);
+
+    fn wrap(this: Self::Inner<'_>) -> Self::Param<'_> {
+        SignalCtx {
+            data: this.0,
+            commands: this.1,
+        }
+    }
+}
+
+/// [`SignalCtx`] plus the entity the mapper's output is written to.
+///
+/// What the scan actually runs, and never what a user writes. The scan is
+/// generic over `D` alone, so it cannot insert an output type it can't name;
+/// the mapper is wrapped in an adapter that does the insert itself and reports
+/// `Out = ()`. The target rides in through the input rather than being captured
+/// because a shared registration serves many subscribers.
+///
+/// Only `Inner` is ever built: the wrapped form exists because `SystemInput`
+/// demands one, and nothing takes this as a function parameter.
+#[expect(dead_code, reason = "the wrapped form is never handed to a function")]
+pub(crate) struct TargetedSignalCtx<'a, D: QueryData> {
+    pub(crate) target: Entity,
+    pub(crate) data: D::Item<'a, 'static>,
+    pub(crate) commands: Commands<'a, 'a>,
+}
+
+impl<'a, D: SignalData> SystemInput for TargetedSignalCtx<'a, D> {
+    type Param<'i> = TargetedSignalCtx<'i, D>;
+    type Inner<'i> = (Entity, D::Item<'i, 'static>, Commands<'i, 'i>);
+
+    fn wrap(this: Self::Inner<'_>) -> Self::Param<'_> {
+        TargetedSignalCtx {
+            target: this.0,
+            data: this.1,
+            commands: this.2,
+        }
+    }
 }
 
 impl<D: SignalData> SubscriberSet<D>
@@ -169,30 +318,54 @@ where
     }
 
     fn push(&mut self, owner: Entity, closure: SubscriberClosure<D>) {
-        self.closures.push(closure);
-        self.owners.push(owner);
+        self.closures.f.push(closure);
+        self.closures.owners.push(owner);
     }
 
-    /// Drop every subscription `owner` holds on this source.
+    /// Point `owner` at an already-registered mapper system.
+    fn push_system(&mut self, owner: Entity, system: Entity) {
+        self.systems.f.push(system);
+        self.systems.owners.push(owner);
+    }
+
+    /// Drop every subscription `owner` holds on this source, returning the
+    /// mapper systems it was using so the caller can release its claim on them.
     ///
     /// Callers hold at most one closure per (owner, source) pair, so this is the
     /// whole of an unsubscribe — see `subscribe_derived`, which folds two signals
     /// pointing at the same entity into a single mark.
-    fn remove_owner(&mut self, owner: Entity) {
+    fn remove_owner(&mut self, owner: Entity) -> SmallVec<[Entity; 1]> {
         let mut index = 0;
-        while index < self.owners.len() {
-            if self.owners[index] == owner {
-                self.owners.remove(index);
-                drop(self.closures.remove(index));
+        while index < self.closures.owners.len() {
+            if self.closures.owners[index] == owner {
+                self.closures.owners.remove(index);
+                drop(self.closures.f.remove(index));
             } else {
                 index += 1;
             }
         }
+
+        let mut released = SmallVec::new();
+        let mut index = 0;
+        while index < self.systems.owners.len() {
+            if self.systems.owners[index] == owner {
+                self.systems.owners.remove(index);
+                released.push(self.systems.f.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        released
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.closures.len()
+        self.closures.f.len()
+    }
+
+    #[cfg(test)]
+    fn system_len(&self) -> usize {
+        self.systems.f.len()
     }
 }
 
@@ -202,8 +375,14 @@ where
 {
     fn default() -> Self {
         Self {
-            closures: SmallVec::new(),
-            owners: SmallVec::new(),
+            closures: NodeClosures {
+                f: SmallVec::new(),
+                owners: SmallVec::new(),
+            },
+            systems: NodeSystems {
+                f: SmallVec::new(),
+                owners: SmallVec::new(),
+            },
         }
     }
 }
