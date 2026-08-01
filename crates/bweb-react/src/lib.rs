@@ -21,6 +21,8 @@ pub mod optional;
 pub mod signal;
 pub mod target;
 
+pub mod signal2;
+
 pub struct ReactPlugin;
 
 impl Plugin for ReactPlugin {

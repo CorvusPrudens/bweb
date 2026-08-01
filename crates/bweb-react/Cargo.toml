@@ -20,6 +20,7 @@ log = "0.4"
 variadics_please = "1.1.0"
 uuid = { version = "1.18", default-features = false, features = ["v4"] }
 bweb = { path = "../../", optional = true, default-features = false }
+smallvec = { version = "1.11.1", features = ["const_generics"] }
 
 [dev-dependencies]
 bevy_utils = { version = "0.18.0", default-features = false, features = [
@@ -29,4 +30,8 @@ criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "bench"
+harness = false
+
+[[bench]]
+name = "signal2"
 harness = false
