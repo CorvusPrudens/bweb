@@ -314,10 +314,6 @@ impl<R: 'static> ReactiveList<R> {
     }
 
     /// End the list when the component goes away.
-    ///
-    /// Despawning the controller is the whole teardown: it takes the effect's
-    /// subscriptions and system registration with it through
-    /// [`Effect::on_replace`], and the rows through `RowOf`'s linked spawn.
     fn on_replace(mut world: DeferredWorld, ctx: HookContext) {
         let Some(controller) = world
             .get::<Self>(ctx.entity)

@@ -13,7 +13,7 @@ use bevy_ecs::{
 use crate::signal2::{
     ReactiveWork, RegisteredSignalSystem, SharedSignalSystems, SignalCtx, SignalData,
     SubscriberClosure, SubscriberContext, SubscriberSet, TargetedSignalCtx, release_signal_system,
-    source::{SourceSignal, Watching},
+    source::{SourceSignal, Watching, park, watched},
 };
 
 pub struct MappedSignal<D: SignalData, O> {
@@ -68,49 +68,35 @@ where
             // command, so `Watching` may not have landed yet, and the initial
             // evaluation below needs `&mut World` to apply what it writes.
             world.commands().queue(move |world: &mut World| {
-                let Some(&Watching(source)) = world.get::<Watching>(signal) else {
-                    log::warn!(
-                        "signal2: mapped signal on {entity} was inserted before its source \
-                         was watched; the subscription has been dropped"
-                    );
-                    return;
+                let subscribe = move |world: &mut World, source: Entity| {
+                    // The owner can be despawned between the insert and this
+                    // running, which for a parked subscription can be a long way.
+                    if world.get_entity(entity).is_err() {
+                        return;
+                    }
+
+                    let closure: SubscriberClosure<D> = Box::new(move |data, mut ctx| {
+                        ctx.commands.entity(entity).insert(mapper(data));
+                    });
+
+                    dispatch_once::<D>(world, source, &closure);
+
+                    let Ok(mut source_entity) = world.get_entity_mut(source) else {
+                        return;
+                    };
+                    let mut subs = source_entity
+                        .entry::<SubscriberSet<D>>()
+                        .or_default()
+                        .into_mut();
+                    subs.push(entity, signal, closure);
                 };
 
-                let closure: SubscriberClosure<D> = Box::new(move |data, mut ctx| {
-                    ctx.commands.entity(entity).insert(mapper(data));
-                });
-
-                // A new subscriber has to be brought up to date here: the scan
-                // only visits changed entities, and the source it just attached
-                // to may not change again for a long time (or ever).
-                let mut queue = CommandQueue::default();
-                {
-                    let mut work = ReactiveWork::default();
-                    let commands = Commands::new(&mut queue, world);
-
-                    if let Some(item) = world
-                        .get_entity(source)
-                        .ok()
-                        .and_then(|entity| entity.get_components::<D>().ok())
-                    {
-                        closure(
-                            item,
-                            SubscriberContext {
-                                world,
-                                work: &mut work,
-                                commands,
-                            },
-                        );
-                    }
+                match watched(world, signal) {
+                    Some(source) => subscribe(world, source),
+                    // Not an error: with `watch_bundle` the host may simply not
+                    // have been spawned yet. `bind` runs this when it is.
+                    None => park(world, signal, subscribe),
                 }
-                queue.apply(world);
-
-                let mut source_entity = world.entity_mut(source);
-                let mut subs = source_entity
-                    .entry::<SubscriberSet<D>>()
-                    .or_default()
-                    .into_mut();
-                subs.push(entity, closure);
             });
         })
     }
@@ -128,7 +114,7 @@ where
             };
             let signal = mapped.signal.data.entity;
 
-            let Some(&Watching(source)) = world.get::<Watching>(signal) else {
+            let Some(source) = world.get::<Watching>(signal).and_then(Watching::target) else {
                 // Never finished subscribing, so there is nothing to undo.
                 return;
             };
@@ -274,12 +260,55 @@ where
     system
 }
 
+/// Run a subscriber closure once, outside the scan, against `source`'s current
+/// value.
+///
+/// A subscriber that has just attached has to be brought up to date: the scan
+/// only visits entities that changed, and the source it attached to may not
+/// change again for a long time (or ever). A repoint owes the same debt for the
+/// same reason — the subscriber's new target has almost certainly not changed
+/// this frame.
+///
+/// A private queue rather than the world's: the closure is handed `&World`, and
+/// applying what it writes is what wants `&mut`.
+pub(crate) fn dispatch_once<D: SignalData>(
+    world: &mut World,
+    source: Entity,
+    closure: &SubscriberClosure<D>,
+) where
+    for<'w, 's> D::Item<'w, 's>: Copy,
+{
+    let mut queue = CommandQueue::default();
+    {
+        let mut work = ReactiveWork::default();
+        let commands = Commands::new(&mut queue, world);
+
+        let Some(item) = world
+            .get_entity(source)
+            .ok()
+            .and_then(|entity| entity.get_components::<D>().ok())
+        else {
+            return;
+        };
+
+        closure(
+            item,
+            SubscriberContext {
+                world,
+                work: &mut work,
+                commands,
+            },
+        );
+    }
+    queue.apply(world);
+}
+
 /// Run a registered mapper once, outside the scan.
 ///
 /// This is the same debt [`MappedSignal`] settles inline when it attaches: the
 /// scan only visits entities that changed, and a source that a subscriber just
 /// attached to may not change again for a long time.
-fn run_registered_mapper<D: SignalData>(
+pub(crate) fn run_registered_mapper<D: SignalData>(
     world: &mut World,
     system: Entity,
     target: Entity,
@@ -356,34 +385,37 @@ where
             // command, so `Watching` may not have landed yet, and registering
             // the mapper needs `&mut World` to initialize it.
             world.commands().queue(move |world: &mut World| {
-                // The owner can be despawned between the insert and this
-                // command, in which case its `on_replace` has already run and
-                // has no registration to release — so don't make one.
-                if world.get_entity(entity).is_err() {
-                    return;
-                }
+                let subscribe = move |world: &mut World, source: Entity| {
+                    // The owner can be despawned between the insert and this
+                    // running, in which case its `on_replace` has already run and
+                    // has no registration to release — so don't make one.
+                    if world.get_entity(entity).is_err() {
+                        return;
+                    }
 
-                let Some(&Watching(source)) = world.get::<Watching>(signal) else {
-                    log::warn!(
-                        "signal2: mapped signal on {entity} was inserted before its source \
-                         was watched; the subscription has been dropped"
-                    );
-                    return;
+                    let system = register_mapper::<D, S, O>(world, mapper, shared);
+                    if let Some(mut mapped) = world.get_mut::<MappedSignalSystem<D, S, O>>(entity) {
+                        mapped.registered = Some(system);
+                    }
+
+                    run_registered_mapper::<D>(world, system, entity, source);
+
+                    let Ok(mut source_entity) = world.get_entity_mut(source) else {
+                        return;
+                    };
+                    let mut subs = source_entity
+                        .entry::<SubscriberSet<D>>()
+                        .or_default()
+                        .into_mut();
+                    subs.push_system(entity, signal, system);
                 };
 
-                let system = register_mapper::<D, S, O>(world, mapper, shared);
-                if let Some(mut mapped) = world.get_mut::<MappedSignalSystem<D, S, O>>(entity) {
-                    mapped.registered = Some(system);
+                match watched(world, signal) {
+                    Some(source) => subscribe(world, source),
+                    // Not an error: with `watch_bundle` the host may simply not
+                    // have been spawned yet. `bind` runs this when it is.
+                    None => park(world, signal, subscribe),
                 }
-
-                run_registered_mapper::<D>(world, system, entity, source);
-
-                let mut source_entity = world.entity_mut(source);
-                let mut subs = source_entity
-                    .entry::<SubscriberSet<D>>()
-                    .or_default()
-                    .into_mut();
-                subs.push_system(entity, system);
             });
         })
     }
@@ -401,9 +433,7 @@ where
             };
             let signal = mapped.signal.data.entity;
             let registered = mapped.registered;
-            let source = world
-                .get::<Watching>(signal)
-                .map(|&Watching(source)| source);
+            let source = world.get::<Watching>(signal).and_then(Watching::target);
 
             world.commands().queue(move |world: &mut World| {
                 if let Some(source) = source

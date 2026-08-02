@@ -4,16 +4,17 @@ use std::sync::{
 };
 
 use bevy_app::App;
-use bevy_ecs::{prelude::*, system::SystemIdMarker};
+use bevy_ecs::{prelude::*, system::RunSystemOnce, system::SystemIdMarker};
 
 use crate::signal2::{
-    REACTION_LIMIT, ReactivePlugin, RegisteredSignalSystem, SignalCtx, SignalData, SignalExt,
-    SubscriberSet,
+    REACTION_LIMIT, ReactError, ReactivePlugin, RegisteredSignalSystem, SignalCtx, SignalData,
+    SignalExt, SubscriberSet,
     derived::{NodeLevel, NodeSources, NodeSubscribers},
+    dynamic::Signal,
     effect::Effect,
     list::{ListOf, ListSource, ReactiveList},
     run_reactive_schedule, settle_reactive,
-    source::{SignalStore, SourceSignal},
+    source::{SignalStore, SourceSignal, WatchTarget, Watching},
 };
 
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
@@ -39,6 +40,12 @@ struct Right(i32);
 
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 struct Bottom(i32);
+
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+struct Selected(Entity);
+
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+struct Chosen(Entity);
 
 fn double(source: &Source) -> Doubled {
     Doubled(source.0 * 2)
@@ -2183,4 +2190,570 @@ fn dropping_the_last_handle_collects_the_cell() {
     keepalive.set(2);
     run_reactive_schedule(world);
     assert!(world.get_entity(entity).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Binding to the entity a bundle lands on
+// ---------------------------------------------------------------------------
+
+/// The ordinary shape: the watched component is on one entity, the mapped
+/// output on another, and neither entity was known when the signal was built.
+#[test]
+fn a_watch_bundle_binds_to_the_entity_it_is_inserted_on() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let target = {
+        let mut commands = world.commands();
+        let watch = commands.signal::<&Source>().watch_bundle();
+        let target = commands.spawn(watch.map(double)).id();
+        commands.spawn((Source(21), watch));
+        target
+    };
+    world.flush();
+
+    // No schedule run: binding is what lets the subscriber settle inline, the
+    // same as `watch`.
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(42)));
+}
+
+/// The regression guard for the ordering hazard `Watching::UNBOUND` exists to
+/// remove.
+///
+/// Every subscription path resolves `Watching` from inside a queued command,
+/// while `WatchTarget` binds from a hook. If that binding were also queued, this
+/// would pass in one order and silently drop the subscription in the other,
+/// because hooks fire — and so queue their commands — in the bundle's component
+/// order. Both orders must work.
+#[test]
+fn a_watch_bundle_binds_regardless_of_its_place_in_the_bundle() {
+    for watch_first in [true, false] {
+        let mut app = app();
+        let world = app.world_mut();
+
+        let host = {
+            let mut commands = world.commands();
+            let watch = commands.signal::<&Source>().watch_bundle();
+            let mapped = watch.map(double);
+            if watch_first {
+                commands.spawn((Source(4), watch, mapped)).id()
+            } else {
+                commands.spawn((Source(4), mapped, watch)).id()
+            }
+        };
+        world.flush();
+
+        assert_eq!(
+            world.get::<Doubled>(host),
+            Some(&Doubled(8)),
+            "a watch_bundle placed {} the mapped signal did not bind in time",
+            if watch_first { "before" } else { "after" }
+        );
+    }
+}
+
+/// Binding is not just a one-shot initial evaluation: the host has to end up in
+/// the scan's query the way a `watch`ed entity does.
+#[test]
+fn a_watch_bundle_host_dispatches_on_change() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (host, target) = {
+        let mut commands = world.commands();
+        let watch = commands.signal::<&Source>().watch_bundle();
+        let target = commands.spawn(watch.map(double)).id();
+        let host = commands.spawn((Source(1), watch)).id();
+        (host, target)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    world.get_mut::<Source>(host).unwrap().0 = 5;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(10)));
+    assert_eq!(subscribers::<&Source>(world, host), 1);
+}
+
+/// A signal entity carries `Watching` from the moment it is spawned, so "not
+/// bound yet" has to be a value rather than a missing component — otherwise
+/// every reader would take an unbound signal for a bound one.
+#[test]
+fn an_unbound_signal_reads_as_unwatched() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let signal = {
+        let mut commands = world.commands();
+        commands.signal::<&Source>().watch_bundle()
+    };
+    world.flush();
+
+    let watching = world
+        .get::<Watching>(signal.entity())
+        .expect("a signal entity carries `Watching` from its spawn");
+    assert_eq!(watching.target(), None);
+
+    // And a read through it fails as unwatched rather than resolving to the
+    // placeholder entity.
+    let unwatched = world
+        .run_system_once(move |store: SignalStore| {
+            matches!(signal.get(&store), Err(ReactError::NotWatched(_)))
+        })
+        .expect("the probe system should run");
+    assert!(unwatched, "an unbound signal must not resolve to a target");
+}
+
+/// The component *is* the binding's lifetime, so losing it has to unbind the
+/// signal rather than leave it reporting its old host's value.
+#[test]
+fn removing_a_watch_bundle_unbinds_the_signal() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (host, entity) = {
+        let mut commands = world.commands();
+        let watch = commands.signal::<&Source>().watch_bundle();
+        let entity = watch.entity();
+        let host = commands.spawn((Source(3), watch)).id();
+        (host, entity)
+    };
+    world.flush();
+
+    assert_eq!(world.get::<Watching>(entity).unwrap().target(), Some(host));
+
+    world.entity_mut(host).remove::<WatchTarget<&Source>>();
+    world.flush();
+
+    assert_eq!(world.get::<Watching>(entity).unwrap().target(), None);
+}
+
+/// A subscriber that arrives before the binding parks itself rather than being
+/// dropped, so the mapper system path survives a host spawned later.
+#[test]
+fn a_mapper_system_waits_for_a_late_binding() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (target, watch) = {
+        let mut commands = world.commands();
+        let watch = commands.signal::<&Source>().watch_bundle();
+        let target = commands.spawn(watch.map_system(double_system)).id();
+        (target, watch)
+    };
+    world.flush();
+
+    assert_eq!(
+        world.get::<Doubled>(target),
+        None,
+        "there is nothing to map until the signal is bound"
+    );
+
+    let host = world.spawn((Source(21), watch)).id();
+    world.flush();
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(42)));
+    assert_eq!(subscribers::<&Source>(world, host), 0, "no plain closures");
+    assert_eq!(
+        world
+            .get::<SubscriberSet<&Source>>(host)
+            .map_or(0, |set| set.system_len()),
+        1
+    );
+}
+
+/// The derived path has no retry of its own: a node whose read failed holds an
+/// error and has no edge to be woken through, so parking is what keeps it from
+/// being stuck for good.
+#[test]
+fn a_derived_node_waits_for_a_late_binding() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (node, watch) = {
+        let mut commands = world.commands();
+        let watch = commands.signal::<&Source>().watch_bundle();
+        let signal = watch.signal();
+        let node = commands.derive(move |store| Ok(Doubled(signal.get(store)?.0 * 2)));
+        (node.entity(), watch)
+    };
+    world.flush();
+
+    // Evaluates against an unbound signal and fails. This is the pass that has
+    // to leave something behind for the binding to find.
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(node), None);
+
+    let host = world.spawn((Source(6), watch)).id();
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(node), Some(&Doubled(12)));
+
+    // And it is genuinely subscribed now, not just evaluated once.
+    world.get_mut::<Source>(host).unwrap().0 = 10;
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(node), Some(&Doubled(20)));
+}
+
+// ---------------------------------------------------------------------------
+// `Signal<T>`: one handle over every kind of source
+// ---------------------------------------------------------------------------
+
+/// A constant has nothing to subscribe to, and reporting a read anyway would
+/// wire an edge that can never fire.
+#[test]
+fn a_value_signal_subscribes_to_nothing() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    let counter = runs.clone();
+
+    let node = {
+        let mut commands = world.commands();
+        let signal = Signal::value(7);
+        commands.derive(move |store| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(Sum(*signal.get(store)?))
+        })
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(7)));
+    assert_eq!(
+        world.get::<NodeSources>(node.entity()).map(|s| s.0.len()),
+        Some(0),
+        "a constant must not become an edge"
+    );
+
+    let settled = runs.load(Ordering::Relaxed);
+    run_reactive_schedule(world);
+    assert_eq!(
+        runs.load(Ordering::Relaxed),
+        settled,
+        "nothing can wake a node that only reads constants"
+    );
+}
+
+/// The other three variants all have to reach the same graph the direct handles
+/// do, so each is checked end to end: read, subscribe, wake.
+#[test]
+fn a_cell_signal_wakes_its_reader() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (cell, node) = {
+        let mut commands = world.commands();
+        let cell = commands.cell(1);
+        let signal = Signal::from(cell.clone());
+        let node = commands.derive(move |store| Ok(Sum(*signal.get(store)?)));
+        (cell, node)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(1)));
+
+    cell.set(9);
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(9)));
+}
+
+#[test]
+fn a_source_signal_wakes_its_reader() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(2)).id();
+
+    let node = {
+        let mut commands = world.commands();
+        let signal = Signal::from(commands.signal::<&Source>().watch(source));
+        commands.derive(move |store| Ok(Sum(signal.get(store)?.0)))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(2)));
+
+    world.get_mut::<Source>(source).unwrap().0 = 8;
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(8)));
+}
+
+/// Projection is what keeps `Signal<T>` usable for a `T` that cannot itself be
+/// a component — `Entity` above all, which is what `watch_signal` binds on.
+#[test]
+fn a_projected_signal_reads_part_of_a_component() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let first = world.spawn(Source(1)).id();
+    let second = world.spawn(Source(2)).id();
+    let holder = world.spawn(Selected(first)).id();
+
+    let node = {
+        let mut commands = world.commands();
+        let selected = commands.signal::<&Selected>().watch(holder);
+        let signal: Signal<Entity> = Signal::project(selected, |selected| &selected.0);
+        commands.derive(move |store| Ok(Chosen(*signal.get(store)?)))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Chosen>(node.entity()), Some(&Chosen(first)));
+
+    world.get_mut::<Selected>(holder).unwrap().0 = second;
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Chosen>(node.entity()), Some(&Chosen(second)));
+}
+
+/// A derived signal is a `SourceSignal` over its output, so it needs no variant
+/// of its own — this is the guard on that staying true.
+#[test]
+fn a_derived_signal_converts_without_a_variant_of_its_own() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(3)).id();
+
+    let node = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        let doubled = commands.derive(move |store| Ok(Doubled(signal.get(store)?.0 * 2)));
+
+        let signal = Signal::from(doubled);
+        commands.derive(move |store| Ok(Sum(signal.get(store)?.0 + 1)))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(7)));
+
+    world.get_mut::<Source>(source).unwrap().0 = 10;
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(21)));
+}
+
+/// The reactive/constant split is what lets a caller skip building machinery
+/// that could never fire.
+#[test]
+fn a_signal_reports_whether_it_is_reactive() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(0)).id();
+
+    let entity = world.spawn_empty().id();
+    assert!(!Signal::from(entity).is_reactive());
+    assert_eq!(Signal::from(entity).as_value(), Some(&entity));
+
+    let mut commands = world.commands();
+    assert!(Signal::from(commands.cell(0)).is_reactive());
+    assert!(Signal::from(commands.signal::<&Source>().watch(source)).is_reactive());
+}
+
+// ---------------------------------------------------------------------------
+// Following a reactive binding
+// ---------------------------------------------------------------------------
+
+/// The headline behaviour: a mapped subscriber follows the binding, and is
+/// brought up to date against the new target rather than waiting for it to
+/// change.
+#[test]
+fn a_mapped_signal_follows_a_rebound_signal() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let first = world.spawn(Source(1)).id();
+    let second = world.spawn(Source(2)).id();
+
+    let (cell, target) = {
+        let mut commands = world.commands();
+        let cell = commands.cell(first);
+        let signal = commands.signal::<&Source>().watch_signal(cell.clone());
+        let target = commands.spawn(signal.map(double)).id();
+        (cell, target)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(2)));
+    assert_eq!(subscribers::<&Source>(world, first), 1);
+
+    cell.set(second);
+    run_reactive_schedule(world);
+
+    // Neither source changed — only the binding did — so this value can only
+    // come from the subscriber being dispatched against its new target.
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(4)));
+    assert_eq!(
+        subscribers::<&Source>(world, first),
+        0,
+        "the old target must not keep dispatching into the subscriber"
+    );
+    assert_eq!(subscribers::<&Source>(world, second), 1);
+
+    // And the subscription really is live on the new target.
+    world.get_mut::<Source>(second).unwrap().0 = 10;
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(20)));
+
+    // ...while the old one is genuinely detached.
+    world.get_mut::<Source>(first).unwrap().0 = 99;
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(20)));
+}
+
+/// A derived reader is re-evaluated rather than moved, so this checks the other
+/// half of `repoint` — the edge is rewired and the node's value catches up.
+#[test]
+fn a_derived_node_follows_a_rebound_signal() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let first = world.spawn(Source(1)).id();
+    let second = world.spawn(Source(2)).id();
+
+    let (cell, node) = {
+        let mut commands = world.commands();
+        let cell = commands.cell(first);
+        let signal = commands.signal::<&Source>().watch_signal(cell.clone());
+        let node = commands.derive(move |store| Ok(Sum(signal.get(store)?.0 * 10)));
+        (cell, node)
+    };
+    world.flush();
+    settle_reactive(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(10)));
+
+    cell.set(second);
+    settle_reactive(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(20)));
+
+    // The edge moved with it: the new target wakes the node, the old one no
+    // longer does.
+    world.get_mut::<Source>(second).unwrap().0 = 7;
+    settle_reactive(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(70)));
+
+    world.get_mut::<Source>(first).unwrap().0 = 99;
+    settle_reactive(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(70)));
+}
+
+/// A source-backed binding, so the rebind is itself driven by a component
+/// change rather than a cell write.
+#[test]
+fn a_signal_can_be_bound_by_another_signal() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let first = world.spawn(Source(3)).id();
+    let second = world.spawn(Source(4)).id();
+    let holder = world.spawn(Selected(first)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let selected = commands.signal::<&Selected>().watch(holder);
+        let binding = Signal::project(selected, |selected| &selected.0);
+        let signal = commands.signal::<&Source>().watch_signal(binding);
+        commands.spawn(signal.map(double)).id()
+    };
+    world.flush();
+    settle_reactive(world);
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(6)));
+
+    world.get_mut::<Selected>(holder).unwrap().0 = second;
+    settle_reactive(world);
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(8)));
+}
+
+/// A binding that cannot change must not build an effect, a node, or a system
+/// registration — that is the whole reason `watch` stays a separate path.
+#[test]
+fn a_constant_binding_builds_no_machinery() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(21)).id();
+
+    let (target, signal) = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch_signal(source);
+        let target = commands.spawn(signal.map(double)).id();
+        (target, signal)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(42)));
+
+    let signal = signal.entity();
+    assert!(
+        world.get::<Effect>(signal).is_none(),
+        "a constant binding must not park an effect on the signal"
+    );
+    assert!(world.get::<NodeSources>(signal).is_none());
+    assert!(world.get::<NodeLevel>(signal).is_none());
+}
+
+/// Unbinding parks the subscribers rather than dropping them, so a
+/// `watch_bundle` moved from one host to another keeps working.
+#[test]
+fn a_watch_bundle_can_be_moved_between_hosts() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (target, watch) = {
+        let mut commands = world.commands();
+        let watch = commands.signal::<&Source>().watch_bundle();
+        let target = commands.spawn(watch.map(double)).id();
+        (target, watch)
+    };
+    world.flush();
+
+    let first = world.spawn((Source(5), watch.clone())).id();
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(10)));
+
+    // Move it: the old host loses the component, a new one gains it.
+    world.entity_mut(first).remove::<WatchTarget<&Source>>();
+    let second = world.spawn((Source(8), watch)).id();
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(16)));
+    assert_eq!(subscribers::<&Source>(world, first), 0);
+    assert_eq!(subscribers::<&Source>(world, second), 1);
+}
+
+/// Rebinding to the entity a signal is already on is a no-op, not a round trip
+/// through detach and reattach.
+#[test]
+fn rebinding_to_the_same_entity_dispatches_nothing() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let source = world.spawn(Source(1)).id();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let counter = runs.clone();
+
+    let cell = {
+        let mut commands = world.commands();
+        let cell = commands.cell(source);
+        let signal = commands.signal::<&Source>().watch_signal(cell.clone());
+        commands.spawn(signal.map_system(move |ctx: SignalCtx<&Source>| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Doubled(ctx.data.0 * 2)
+        }));
+        cell
+    };
+    world.flush();
+    settle_reactive(world);
+
+    let settled = runs.load(Ordering::Relaxed);
+    cell.set(source);
+    settle_reactive(world);
+
+    assert_eq!(
+        runs.load(Ordering::Relaxed),
+        settled,
+        "writing the same entity back must not re-dispatch"
+    );
 }

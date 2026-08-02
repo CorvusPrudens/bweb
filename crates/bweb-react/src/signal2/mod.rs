@@ -17,6 +17,7 @@ use bevy_platform::collections::{HashMap, HashSet};
 
 pub mod cell;
 pub mod derived;
+pub mod dynamic;
 pub mod effect;
 pub mod list;
 pub mod mapped;
@@ -170,7 +171,7 @@ where
                 // path: a registered system is shared between every subscriber
                 // that uses it, so the owner is the only thing saying which
                 // entity this run's output belongs to.
-                for (&system, &target) in subs.systems.f.iter().zip(&subs.systems.owners) {
+                for (&system, sub) in subs.systems.f.iter().zip(&subs.systems.subs) {
                     let Ok(registered) = systems.get(system) else {
                         log::error!("signal2: mapper system entity {system} is missing");
                         continue;
@@ -185,7 +186,7 @@ where
                     let data = D::shrink(D::release_state(data));
 
                     if let Err(e) =
-                        registered.run_readonly((target, data, commands.reborrow()), world)
+                        registered.run_readonly((sub.owner, data, commands.reborrow()), world)
                     {
                         log::error!("signal2: subscriber system failed to run: {e}");
                     }
@@ -209,12 +210,46 @@ where
 
 struct NodeClosures<D: SignalData> {
     f: SmallVec<[SubscriberClosure<D>; 1]>,
-    /// The entity each subscription's lifetime belongs to.
-    ///
-    /// We maintain a separate bookkeeping array so the scanning pass can
-    /// ignore it and maintain maximum speed.
-    owners: SmallVec<[Entity; 1]>,
+    /// Bookkeeping the scan never looks at, kept in a separate array so it
+    /// stays out of the way of the dispatch loop.
+    subs: SmallVec<[Subscription; 1]>,
 }
+
+/// Who a subscription belongs to, and what it came through.
+///
+/// One array of pairs rather than two parallel arrays, and that is not a
+/// stylistic choice: `SubscriberSet` is fetched per row by the scan, so its size
+/// is on the hot path. Measured with `smallvec/union`, which is what this crate
+/// resolves to, per group:
+///
+/// |                          | x86-64 | wasm32 |
+/// |--------------------------|--------|--------|
+/// | `owners` alone           |     24 |     16 |
+/// | two parallel arrays      |     48 |     32 |
+/// | merged pairs (this)      |     24 |     24 |
+///
+/// So on 64-bit the signal rides along for free — the inline array is smaller
+/// than the heap `(ptr, len)` it shares a union with, so widening it changes
+/// nothing. On wasm32 that pointer pair is only 8 bytes and no longer dominates,
+/// so this does cost 8 bytes per group (16 per `SubscriberSet`). Still half what
+/// two arrays would cost, but not free — worth knowing before adding a fourth
+/// piece of per-subscription bookkeeping.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Subscription {
+    /// The entity this subscription's lifetime belongs to.
+    owner: Entity,
+    /// The signal it came through, or [`SHARED`].
+    signal: Entity,
+}
+
+/// A subscription belonging to no single signal, and so never moved by a
+/// repoint.
+///
+/// Derived marks are the only ones: `subscribe_derived` deliberately folds two
+/// signals pointing at one target into a single mark, and tears down through
+/// [`unsubscribe_source`](derived::unsubscribe_source) — which already knows how
+/// to leave a shared mark alone — rather than through a repoint.
+const SHARED: Entity = Entity::PLACEHOLDER;
 
 /// Parallel to [`NodeClosures`], but holding the *entity* a mapper system is
 /// parked on rather than the system itself.
@@ -225,7 +260,7 @@ struct NodeClosures<D: SignalData> {
 /// of each carrying a private `QueryState`.
 struct NodeSystems {
     f: SmallVec<[Entity; 1]>,
-    owners: SmallVec<[Entity; 1]>,
+    subs: SmallVec<[Subscription; 1]>,
 }
 
 /// A mapper system parked on its own entity.
@@ -343,15 +378,46 @@ where
         world.resource_mut::<ReactiveSystems>().register::<D>();
     }
 
-    fn push(&mut self, owner: Entity, closure: SubscriberClosure<D>) {
+    fn push(&mut self, owner: Entity, signal: Entity, closure: SubscriberClosure<D>) {
         self.closures.f.push(closure);
-        self.closures.owners.push(owner);
+        self.closures.subs.push(Subscription { owner, signal });
     }
 
     /// Point `owner` at an already-registered mapper system.
-    fn push_system(&mut self, owner: Entity, system: Entity) {
+    fn push_system(&mut self, owner: Entity, signal: Entity, system: Entity) {
         self.systems.f.push(system);
-        self.systems.owners.push(owner);
+        self.systems.subs.push(Subscription { owner, signal });
+    }
+
+    /// Take every subscription that came through `signal`, leaving the rest.
+    ///
+    /// The move half of a repoint: a target can carry subscriptions from any
+    /// number of signals, and only this one's may follow it to its new target.
+    /// [`SHARED`] entries are never taken.
+    fn take_signal(&mut self, signal: Entity) -> TakenSubscriptions<D> {
+        let mut taken = TakenSubscriptions::default();
+
+        let mut index = 0;
+        while index < self.closures.subs.len() {
+            if self.closures.subs[index].signal == signal {
+                let owner = self.closures.subs.remove(index).owner;
+                taken.closures.push((owner, self.closures.f.remove(index)));
+            } else {
+                index += 1;
+            }
+        }
+
+        let mut index = 0;
+        while index < self.systems.subs.len() {
+            if self.systems.subs[index].signal == signal {
+                let owner = self.systems.subs.remove(index).owner;
+                taken.systems.push((owner, self.systems.f.remove(index)));
+            } else {
+                index += 1;
+            }
+        }
+
+        taken
     }
 
     /// Drop every subscription `owner` holds on this source, returning the
@@ -362,9 +428,9 @@ where
     /// pointing at the same entity into a single mark.
     fn remove_owner(&mut self, owner: Entity) -> SmallVec<[Entity; 1]> {
         let mut index = 0;
-        while index < self.closures.owners.len() {
-            if self.closures.owners[index] == owner {
-                self.closures.owners.remove(index);
+        while index < self.closures.subs.len() {
+            if self.closures.subs[index].owner == owner {
+                self.closures.subs.remove(index);
                 drop(self.closures.f.remove(index));
             } else {
                 index += 1;
@@ -373,15 +439,27 @@ where
 
         let mut released = SmallVec::new();
         let mut index = 0;
-        while index < self.systems.owners.len() {
-            if self.systems.owners[index] == owner {
-                self.systems.owners.remove(index);
+        while index < self.systems.subs.len() {
+            if self.systems.subs[index].owner == owner {
+                self.systems.subs.remove(index);
                 released.push(self.systems.f.remove(index));
             } else {
                 index += 1;
             }
         }
         released
+    }
+
+    /// Re-attach subscriptions taken from another target by [`take_signal`].
+    ///
+    /// [`take_signal`]: Self::take_signal
+    fn restore(&mut self, signal: Entity, taken: &mut TakenSubscriptions<D>) {
+        for (owner, closure) in taken.closures.drain(..) {
+            self.push(owner, signal, closure);
+        }
+        for (owner, system) in taken.systems.drain(..) {
+            self.push_system(owner, signal, system);
+        }
     }
 
     #[cfg(test)]
@@ -403,12 +481,44 @@ where
         Self {
             closures: NodeClosures {
                 f: SmallVec::new(),
-                owners: SmallVec::new(),
+                subs: SmallVec::new(),
             },
             systems: NodeSystems {
                 f: SmallVec::new(),
-                owners: SmallVec::new(),
+                subs: SmallVec::new(),
             },
+        }
+    }
+}
+
+/// Subscriptions lifted off one target and not yet placed on another.
+///
+/// Held apart from the world because the move needs `&mut World` for the target
+/// on each end and cannot borrow either set across the other.
+pub(crate) struct TakenSubscriptions<D: SignalData> {
+    closures: SmallVec<[(Entity, SubscriberClosure<D>); 1]>,
+    systems: SmallVec<[(Entity, Entity); 1]>,
+}
+
+impl<D: SignalData> TakenSubscriptions<D> {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.closures.is_empty() && self.systems.is_empty()
+    }
+
+    pub(crate) fn closures(&self) -> impl Iterator<Item = &(Entity, SubscriberClosure<D>)> {
+        self.closures.iter()
+    }
+
+    pub(crate) fn systems(&self) -> impl Iterator<Item = &(Entity, Entity)> {
+        self.systems.iter()
+    }
+}
+
+impl<D: SignalData> Default for TakenSubscriptions<D> {
+    fn default() -> Self {
+        Self {
+            closures: SmallVec::new(),
+            systems: SmallVec::new(),
         }
     }
 }
