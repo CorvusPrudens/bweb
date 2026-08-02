@@ -21,7 +21,10 @@ pub mod dynamic;
 pub mod effect;
 pub mod list;
 pub mod mapped;
+pub mod removal;
+pub mod resource;
 pub mod source;
+pub mod value;
 
 #[cfg(test)]
 mod tests;
@@ -34,7 +37,10 @@ use crate::signal2::{
     derived::{PendingNodes, run_derived_nodes},
     effect::run_pending_effects,
     list::{ListSource, ReactiveList},
-    source::{SignalReads, SourceSignalView},
+    removal::{RemovedSources, WatchedRemovals, drain_removed_sources},
+    resource::{ResSignal, ResourceScanners, run_resource_scanners},
+    source::{SignalReads, SignalStore, SourceSignalView},
+    value::Derived,
 };
 
 pub struct ReactivePlugin;
@@ -45,6 +51,9 @@ impl Plugin for ReactivePlugin {
             .init_resource::<PendingNodes>()
             .init_resource::<CellRegistry>()
             .init_resource::<SharedSignalSystems>()
+            .init_resource::<ResourceScanners>()
+            .init_resource::<RemovedSources>()
+            .init_resource::<WatchedRemovals>()
             // Before `InnerReactiveSystems`, whose `FromWorld` initializes a
             // system that reads it.
             .init_resource::<SignalReads>()
@@ -55,16 +64,79 @@ impl Plugin for ReactivePlugin {
 
 pub trait SignalData: ReadOnlyQueryData + ReleaseStateQueryData + 'static {
     type Filter: QueryFilter;
+
+    /// Register whatever this data needs, beyond the change-tick scan, to
+    /// notice a change the scan cannot see.
+    ///
+    /// Called once per signal type, from
+    /// [`ReactiveSystems::register`](ReactiveSystems::register). Only
+    /// [`Option<&T>`] does anything here: a removal leaves nothing for
+    /// `Changed<T>` to match, so it takes an observer instead. See
+    /// [`removal`](crate::signal2::removal).
+    ///
+    /// `S` is the whole signal this data is part of, which is not always
+    /// `Self` — for `(Option<&A>, &B)` the subscribers live in a
+    /// `SubscriberSet<(Option<&A>, &B)>`, so a wakeup registered by the
+    /// `Option<&A>` half has to dispatch the tuple.
+    fn register_removal_wakeups<S>(commands: &mut Commands)
+    where
+        S: SignalData,
+        for<'w, 's> S::Item<'w, 's>: Copy;
 }
 
 impl<T: Component> SignalData for &'static T {
     type Filter = Changed<T>;
+
+    /// Nothing to register. A subscriber over `&T` has no value to be handed
+    /// once `T` is gone, so there is no dispatch to make — reach for
+    /// [`Option<&T>`] when absence is a state the view has to render.
+    fn register_removal_wakeups<S>(_: &mut Commands)
+    where
+        S: SignalData,
+        for<'w, 's> S::Item<'w, 's>: Copy,
+    {
+    }
+}
+
+/// A source that reports absence as a value rather than as a non-match.
+///
+/// What this buys over `&T` is that the subscriber keeps running once `T` goes
+/// away, and is handed `None`. That matters more than it sounds: a Bevy
+/// relationship collection is *removed* when its last member leaves rather than
+/// left empty, so `&Children` on a container that just emptied stops
+/// dispatching entirely, where `Option<&Children>` reports the emptying.
+///
+/// The cost is one observer per component type used this way — see
+/// [`removal`](crate::signal2::removal) — and a scan that also visits entities
+/// where `T` is absent but the rest of the signal changed.
+impl<T: Component> SignalData for Option<&'static T> {
+    /// `Changed<T>` covers insertion and mutation; it cannot cover removal,
+    /// which is what the observer is for.
+    type Filter = Changed<T>;
+
+    fn register_removal_wakeups<S>(commands: &mut Commands)
+    where
+        S: SignalData,
+        for<'w, 's> S::Item<'w, 's>: Copy,
+    {
+        removal::watch_removals::<T, S>(commands);
+    }
 }
 
 macro_rules! impl_signal_data {
     ($($ty:ident),*) => {
         impl<$($ty: SignalData),*> SignalData for ($($ty,)*) {
             type Filter = Or<($($ty::Filter,)*)>;
+
+            fn register_removal_wakeups<S>(commands: &mut Commands)
+            where
+                S: SignalData,
+                for<'w, 's> S::Item<'w, 's>: Copy,
+            {
+                // `S`, not `Self`: the subscribers belong to the whole signal,
+                // and each part only contributes the wakeups it knows about.
+                $($ty::register_removal_wakeups::<S>(commands);)*
+            }
         }
     };
 }
@@ -375,7 +447,9 @@ where
     for<'w, 's> D::Item<'w, 's>: Copy,
 {
     fn add(mut world: DeferredWorld, _: HookContext) {
-        world.resource_mut::<ReactiveSystems>().register::<D>();
+        if world.resource_mut::<ReactiveSystems>().register::<D>() {
+            D::register_removal_wakeups::<D>(&mut world.commands());
+        }
     }
 
     fn push(&mut self, owner: Entity, signal: Entity, closure: SubscriberClosure<D>) {
@@ -539,6 +613,23 @@ pub trait SignalExt<'w, 's> {
         F: Fn(&source::SignalStore) -> Result<O, ReactError> + Send + Sync + 'static,
         O: Component;
 
+    /// [`derive`](SignalExt::derive) for a value that is not a component.
+    ///
+    /// Most derived values are not: a `bool`, an `Option<String>`, a
+    /// `Vec<Entity>`. This wraps the output in [`Derived`], which is one, so
+    /// the rest of the graph is unchanged. Read it back with
+    /// [`SourceSignal::value`] rather than `get`, which would hand you the
+    /// wrapper.
+    ///
+    /// [`SourceSignal::value`]: SourceSignal::value
+    fn derive_value<F, O>(&mut self, eval: F) -> SourceSignal<&'static Derived<O>>
+    where
+        F: Fn(&SignalStore) -> Result<O, ReactError> + Send + Sync + 'static,
+        O: Send + Sync + 'static,
+    {
+        self.derive(move |store| eval(store).map(Derived))
+    }
+
     /// Build a [`Cell`]: a signal whose value lives in the handle rather than
     /// in a component, so it can be read and written from anywhere without a
     /// world and without waiting for a flush.
@@ -550,6 +641,33 @@ pub trait SignalExt<'w, 's> {
     fn cell<T>(&mut self, value: T) -> Cell<T>
     where
         T: Send + Sync + 'static;
+
+    /// Build a signal over a whole resource.
+    ///
+    /// The value is cloned on every change, so prefer
+    /// [`resource_with`](SignalExt::resource_with) for anything larger than a
+    /// handful of fields. See [`resource`](crate::signal2::resource) for what
+    /// drives it.
+    #[must_use]
+    fn resource<R>(&mut self) -> ResSignal<R>
+    where
+        R: Resource + Clone,
+    {
+        self.resource_with(R::clone)
+    }
+
+    /// Build a signal over some part of a resource.
+    ///
+    /// `project` runs whenever `R`'s change tick moves — not whenever its
+    /// output moves, which is a separate question. Put a
+    /// [`derive`](SignalExt::derive) in front when readers should only see
+    /// changes they care about.
+    #[must_use]
+    fn resource_with<R, T, F>(&mut self, project: F) -> ResSignal<T>
+    where
+        R: Resource,
+        T: Send + Sync + 'static,
+        F: Fn(&R) -> T + Send + Sync + 'static;
 
     /// Build a keyed list over a collection signal.
     ///
@@ -572,6 +690,29 @@ pub trait SignalExt<'w, 's> {
         G: Fn(&S::Item, &mut Commands) -> B + Send + Sync + 'static,
         B: Bundle,
     {
+        ReactiveList::new(source, key, row)
+    }
+
+    /// Build a keyed list straight from a closure, without naming a collection
+    /// component.
+    ///
+    /// [`list`](SignalExt::list) needs a signal over something that is already
+    /// a component — a relationship collection, usually. This is for a list
+    /// whose contents are computed instead: the closure's `Vec` becomes a
+    /// [`Derived`] collection signal, and the list reads its elements straight
+    /// out of that without ever cloning the whole thing.
+    #[must_use]
+    fn derive_list<R, F, I, K, KF, G, B>(&mut self, items: F, key: KF, row: G) -> ReactiveList<R>
+    where
+        R: Relationship,
+        F: Fn(&SignalStore) -> Result<Vec<I>, ReactError> + Send + Sync + 'static,
+        I: Clone + PartialEq + Send + Sync + 'static,
+        K: Eq + core::hash::Hash + Clone + Send + Sync + 'static,
+        KF: Fn(&I) -> K + Send + Sync + 'static,
+        G: Fn(&I, &mut Commands) -> B + Send + Sync + 'static,
+        B: Bundle,
+    {
+        let source = self.derive_value(items);
         ReactiveList::new(source, key, row)
     }
 }
@@ -599,6 +740,15 @@ impl<'w, 's> SignalExt<'w, 's> for Commands<'w, 's> {
         T: Send + Sync + 'static,
     {
         Cell::new(self, value)
+    }
+
+    fn resource_with<R, T, F>(&mut self, project: F) -> ResSignal<T>
+    where
+        R: Resource,
+        T: Send + Sync + 'static,
+        F: Fn(&R) -> T + Send + Sync + 'static,
+    {
+        resource::resource_with::<R, T, F>(self, project)
     }
 }
 
@@ -711,10 +861,18 @@ pub fn settle_reactive(world: &mut World) -> usize {
         let pending = core::mem::take(&mut world.resource_mut::<PendingNodes>().0);
         work.dirty.extend(pending);
 
+        // Before the cell sweep, because that is how a resource change reaches
+        // anyone: the scanner writes it into a cell, and the sweep below is
+        // what turns that write into dirty nodes.
+        run_resource_scanners(world);
+
         // Before the scans rather than alongside them: a cell write has already
         // happened by the time anyone can see it, so the nodes it wakes belong
         // in this pass's dirty list, not the next one's.
         drain_dirty_cells(world, &mut work);
+
+        // Same reasoning, for the one change the scans structurally cannot see.
+        drain_removed_sources(world, &mut work);
 
         world.resource_scope(|world, mut inner: Mut<InnerReactiveSystems>| {
             let inner = &mut *inner;

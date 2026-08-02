@@ -357,7 +357,9 @@ where
             entity: source_entity,
         });
         commands.queue(|world: &mut World| {
-            world.resource_mut::<ReactiveSystems>().register::<D>();
+            if world.resource_mut::<ReactiveSystems>().register::<D>() {
+                D::register_removal_wakeups::<D>(&mut world.commands());
+            }
         });
 
         SourceSignal {

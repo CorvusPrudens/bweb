@@ -15,6 +15,7 @@ use crate::signal2::{
     list::{ListOf, ListSource, ReactiveList},
     run_reactive_schedule, settle_reactive,
     source::{SignalStore, SourceSignal, WatchTarget, Watching},
+    value::Derived,
 };
 
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
@@ -2756,4 +2757,672 @@ fn rebinding_to_the_same_entity_dispatches_nothing() {
         settled,
         "writing the same entity back must not re-dispatch"
     );
+}
+
+// -- capturing mappers -------------------------------------------------------
+
+/// `map` cannot capture, by design — that is what makes a mapper shareable.
+/// `map_fn` is the escape hatch, and it has to behave identically in every
+/// other respect.
+#[test]
+fn a_capturing_mapper_maps_on_insertion_and_on_change() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let offset = 100;
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        commands
+            .spawn(signal.map_fn(move |value: &Source| Doubled(value.0 * 2 + offset)))
+            .id()
+    };
+    world.flush();
+
+    // No schedule run: a capturing mapper owes the same on-insertion dispatch
+    // a plain one does.
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(102)));
+
+    run_reactive_schedule(world);
+    world.get_mut::<Source>(source).unwrap().0 = 5;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(110)));
+}
+
+/// One `MappedSignal` handed to several entities shares the boxed closure, so
+/// each has to get its own subscription rather than the first one winning.
+#[test]
+fn a_capturing_mapper_can_drive_several_entities() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(2)).id();
+
+    let (first, second) = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        let mapped = signal.map_fn(move |value: &Source| Doubled(value.0 * 3));
+        let first = commands.spawn(mapped.clone()).id();
+        let second = commands.spawn(mapped).id();
+        (first, second)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    world.get_mut::<Source>(source).unwrap().0 = 4;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(first), Some(&Doubled(12)));
+    assert_eq!(world.get::<Doubled>(second), Some(&Doubled(12)));
+}
+
+/// A capturing mapper is not a system, so it must not leave a registration
+/// behind the way `map_system` does.
+#[test]
+fn a_capturing_mapper_registers_no_system() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let before = world
+        .run_system_once(|systems: Query<&SystemIdMarker>| systems.iter().count())
+        .unwrap();
+
+    {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        commands.spawn(signal.map_fn(move |value: &Source| Doubled(value.0)));
+    }
+    world.flush();
+    run_reactive_schedule(world);
+
+    let after = world
+        .run_system_once(|systems: Query<&SystemIdMarker>| systems.iter().count())
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+// -- optional sources --------------------------------------------------------
+
+/// What an `Option<&T>` mapper writes when `T` is absent. A distinct component
+/// so the tests can tell "mapped to the absent form" from "never mapped".
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+struct Presence(bool);
+
+fn presence(source: Option<&Source>) -> Presence {
+    Presence(source.is_some())
+}
+
+/// A subscriber over `&T` never runs while `T` is missing. Over `Option<&T>`
+/// absence is a value, so it runs immediately with `None`.
+#[test]
+fn an_optional_source_maps_when_the_component_is_absent() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn_empty().id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<Option<&Source>>().watch(source);
+        commands.spawn(signal.map(presence)).id()
+    };
+    world.flush();
+
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(false)));
+}
+
+/// The whole point of the tier: `Changed<T>` cannot match a row that no longer
+/// has `T`, so without the removal observer this would keep reporting `true`
+/// forever.
+#[test]
+fn an_optional_source_dispatches_when_the_component_is_removed() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<Option<&Source>>().watch(source);
+        commands.spawn(signal.map(presence)).id()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(true)));
+
+    world.entity_mut(source).remove::<Source>();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(false)));
+}
+
+/// Adding the component back is an ordinary `Changed` dispatch, but only if the
+/// removal path left the subscription intact on the way out.
+#[test]
+fn an_optional_source_recovers_when_the_component_returns() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<Option<&Source>>().watch(source);
+        commands.spawn(signal.map(presence)).id()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    world.entity_mut(source).remove::<Source>();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(false)));
+
+    world.entity_mut(source).insert(Source(7));
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(true)));
+}
+
+/// A derived node subscribes by being *marked*, not by being run. A removal
+/// dispatched with a throwaway `ReactiveWork` would drop that mark on the
+/// floor, so the mark has to land in the pass's own.
+#[test]
+fn a_removal_wakes_a_derived_node() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(3)).id();
+
+    let derived = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<Option<&Source>>().watch(source);
+        commands.derive(move |store| Ok(Sum(signal.get(store)?.map_or(-1, |s| s.0))))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(derived.entity()), Some(&Sum(3)));
+
+    world.entity_mut(source).remove::<Source>();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(derived.entity()), Some(&Sum(-1)));
+}
+
+/// A removal is drained at the top of a pass, beside the cell sweep, so it
+/// settles within the frame it happened rather than the next one.
+#[test]
+fn a_removal_settles_in_one_frame() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<Option<&Source>>().watch(source);
+        commands.spawn(signal.map(presence)).id()
+    };
+    world.flush();
+    settle_reactive(world);
+
+    world.entity_mut(source).remove::<Source>();
+    let passes = settle_reactive(world);
+
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(false)));
+    assert_eq!(passes, 2, "one pass to dispatch, one to prove it settled");
+}
+
+/// `Remove` also fires on despawn, at which point the subscriber set is going
+/// away with the entity. There is nothing to dispatch and nothing to panic
+/// about.
+#[test]
+fn despawning_an_optional_source_is_not_an_error() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<Option<&Source>>().watch(source);
+        commands.spawn(signal.map(presence)).id()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    world.despawn(source);
+    run_reactive_schedule(world);
+
+    // The last value stands: there is no source left to report absence from.
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(true)));
+}
+
+/// A tuple's subscribers live in one `SubscriberSet` keyed by the whole tuple,
+/// so a wakeup registered by the optional half has to dispatch the tuple rather
+/// than the half.
+#[test]
+fn a_removal_wakes_a_tuple_source() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn((Source(2), Other(10))).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<(Option<&Source>, &Other)>().watch(source);
+        commands
+            .spawn(signal.map(|(source, other): (Option<&Source>, &Other)| {
+                Sum(source.map_or(0, |s| s.0) + other.0)
+            }))
+            .id()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(target), Some(&Sum(12)));
+
+    world.entity_mut(source).remove::<Source>();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(target), Some(&Sum(10)));
+}
+
+/// A mapper system reads the same absent value a mapper closure does, and is
+/// dispatched by the same removal path.
+#[test]
+fn a_removal_wakes_a_mapper_system() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<Option<&Source>>().watch(source);
+        commands
+            .spawn(
+                signal.map_system(|ctx: SignalCtx<Option<&Source>>| Presence(ctx.data.is_some())),
+            )
+            .id()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(true)));
+
+    world.entity_mut(source).remove::<Source>();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Presence>(target), Some(&Presence(false)));
+}
+
+/// A relationship collection is *removed* when its last member leaves rather
+/// than left empty, which is the case this tier exists for.
+#[test]
+fn an_emptied_relationship_collection_reports_absence() {
+    let mut app = app();
+    let world = app.world_mut();
+    let container = world.spawn_empty().id();
+    let child = world.spawn(ChildOf(container)).id();
+
+    let target =
+        {
+            let mut commands = world.commands();
+            let signal = commands.signal::<Option<&Children>>().watch(container);
+            commands
+                .spawn(signal.map(|children: Option<&Children>| {
+                    Sum(children.map_or(-1, |c| c.len() as i32))
+                }))
+                .id()
+        };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(target), Some(&Sum(1)));
+
+    world.despawn(child);
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(target), Some(&Sum(-1)));
+}
+
+/// One observer per (component, signal) pair, however many signals are built.
+#[test]
+fn removal_observers_are_registered_once() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let observers = |world: &mut World| {
+        world
+            .run_system_once(|observers: Query<&Observer>| observers.iter().count())
+            .unwrap()
+    };
+
+    let before = observers(world);
+    {
+        let mut commands = world.commands();
+        for _ in 0..5 {
+            let source = commands.spawn(Source(1)).id();
+            let signal = commands.signal::<Option<&Source>>().watch(source);
+            commands.spawn(signal.map(presence));
+        }
+    }
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(observers(world), before + 1);
+}
+
+// -- resource signals --------------------------------------------------------
+
+#[derive(Resource, Clone, Debug, PartialEq)]
+struct Config {
+    scale: i32,
+    name: &'static str,
+}
+
+#[test]
+fn a_resource_signal_reads_the_current_value() {
+    let mut app = app();
+    let world = app.world_mut();
+    world.insert_resource(Config {
+        scale: 3,
+        name: "a",
+    });
+
+    let signal = {
+        let mut commands = world.commands();
+        commands.resource::<Config>()
+    };
+    let derived = {
+        let signal = signal.clone();
+        let mut commands = world.commands();
+        commands.derive(move |store| Ok(Sum(signal.read(store).as_ref().map_or(0, |c| c.scale))))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(derived.entity()), Some(&Sum(3)));
+}
+
+#[test]
+fn a_resource_signal_wakes_readers_when_the_resource_changes() {
+    let mut app = app();
+    let world = app.world_mut();
+    world.insert_resource(Config {
+        scale: 3,
+        name: "a",
+    });
+
+    let signal = {
+        let mut commands = world.commands();
+        commands.resource::<Config>()
+    };
+    let derived = {
+        let signal = signal.clone();
+        let mut commands = world.commands();
+        commands.derive(move |store| Ok(Sum(signal.read(store).as_ref().map_or(0, |c| c.scale))))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    world.resource_mut::<Config>().scale = 10;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(derived.entity()), Some(&Sum(10)));
+}
+
+/// A resource the app has not inserted yet reads `None`, and starts reporting
+/// the moment it appears — the scanner is what notices, so this must not depend
+/// on the signal being built after the resource.
+#[test]
+fn a_resource_signal_picks_up_a_late_resource() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let signal = {
+        let mut commands = world.commands();
+        commands.resource::<Config>()
+    };
+    let derived = {
+        let signal = signal.clone();
+        let mut commands = world.commands();
+        commands.derive(move |store| Ok(Sum(signal.read(store).as_ref().map_or(-1, |c| c.scale))))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(derived.entity()), Some(&Sum(-1)));
+
+    world.insert_resource(Config {
+        scale: 5,
+        name: "a",
+    });
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(derived.entity()), Some(&Sum(5)));
+}
+
+/// A frame in which the resource did not change costs one `is_changed` check
+/// and wakes nobody.
+#[test]
+fn an_unchanged_resource_wakes_nobody() {
+    let mut app = app();
+    let world = app.world_mut();
+    world.insert_resource(Config {
+        scale: 3,
+        name: "a",
+    });
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    let counter = runs.clone();
+    let signal = {
+        let mut commands = world.commands();
+        commands.resource::<Config>()
+    };
+    {
+        let signal = signal.clone();
+        let mut commands = world.commands();
+        commands.derive(move |store| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(Sum(signal.read(store).as_ref().map_or(0, |c| c.scale)))
+        });
+    }
+    world.flush();
+    run_reactive_schedule(world);
+
+    let settled = runs.load(Ordering::Relaxed);
+    run_reactive_schedule(world);
+    run_reactive_schedule(world);
+
+    assert_eq!(runs.load(Ordering::Relaxed), settled);
+}
+
+/// A projection narrows what gets copied out of the resource. It does not
+/// narrow what wakes the reader — that is the resource's tick — which is
+/// exactly what the doc comment promises.
+#[test]
+fn a_projected_resource_signal_copies_only_the_projection() {
+    let mut app = app();
+    let world = app.world_mut();
+    world.insert_resource(Config {
+        scale: 3,
+        name: "a",
+    });
+
+    let signal = {
+        let mut commands = world.commands();
+        commands.resource_with(|config: &Config| config.name)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(signal.peek_cloned(), Some("a"));
+
+    world.resource_mut::<Config>().name = "b";
+    run_reactive_schedule(world);
+
+    assert_eq!(signal.peek_cloned(), Some("b"));
+}
+
+/// The scanner's registry holds weak handles, so a signal nobody kept stops
+/// costing anything rather than being written forever.
+#[test]
+fn dropping_the_last_resource_handle_prunes_the_scanner() {
+    let mut app = app();
+    let world = app.world_mut();
+    world.insert_resource(Config {
+        scale: 3,
+        name: "a",
+    });
+
+    let signal = {
+        let mut commands = world.commands();
+        commands.resource::<Config>()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(crate::signal2::resource::watching_count::<Config>(world), 1);
+
+    drop(signal);
+    // The scanner learns the handle is gone the next time it tries to write.
+    world.resource_mut::<Config>().scale = 4;
+    run_reactive_schedule(world);
+
+    assert_eq!(
+        crate::signal2::resource::watching_count::<Config>(world),
+        0,
+        "a dropped signal must stop costing a clone per change"
+    );
+}
+
+// -- derived values ----------------------------------------------------------
+
+/// The wrapper exists so a derived signal can produce something that is not a
+/// component; reading it back must not make the caller think about that.
+#[test]
+fn derive_value_wraps_a_plain_value() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(4)).id();
+
+    let derived = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        commands.derive_value(move |store| Ok(signal.get(store)?.0 > 2))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(
+        world.get::<Derived<bool>>(derived.entity()),
+        Some(&Derived(true))
+    );
+
+    world.get_mut::<Source>(source).unwrap().0 = 1;
+    run_reactive_schedule(world);
+
+    assert_eq!(
+        world.get::<Derived<bool>>(derived.entity()),
+        Some(&Derived(false))
+    );
+}
+
+/// A wrapped value reads back through `project` as a plain `Signal<T>`, which
+/// is what makes a derived `Entity` usable as a binding.
+#[test]
+fn a_derived_value_projects_to_a_signal() {
+    let mut app = app();
+    let world = app.world_mut();
+    let first = world.spawn(Source(1)).id();
+    let second = world.spawn(Source(2)).id();
+    let chooser = world.spawn(Selected(first)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let selected = commands.signal::<&Selected>().watch(chooser);
+        let chosen = commands.derive_value(move |store| Ok(selected.get(store)?.0));
+        let signal = commands.signal::<&Source>().watch_signal(chosen.project());
+        commands.spawn(signal.map(double)).id()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(2)));
+
+    world.get_mut::<Selected>(chooser).unwrap().0 = second;
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(4)));
+}
+
+/// `derive_list` is the wrapper plus the blanket `ListSource`: a computed `Vec`
+/// drives a list with no collection component in sight.
+#[test]
+fn derive_list_builds_rows_from_a_computed_collection() {
+    let mut app = app();
+    let world = app.world_mut();
+    let source = world.spawn(Source(3)).id();
+    let container = world.spawn_empty().id();
+
+    {
+        let mut commands = world.commands();
+        let signal = commands.signal::<&Source>().watch(source);
+        let list: ReactiveList = commands.derive_list(
+            move |store| Ok((0..signal.get(store)?.0 as u32).collect::<Vec<u32>>()),
+            |item| *item,
+            |item, _| RowValue(*item),
+        );
+        commands.entity(container).insert(list);
+    }
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(row_values(world, container), vec![0, 1, 2]);
+
+    world.get_mut::<Source>(source).unwrap().0 = 5;
+    run_reactive_schedule(world);
+
+    assert_eq!(row_values(world, container), vec![0, 1, 2, 3, 4]);
+}
+
+// -- conditional rendering ---------------------------------------------------
+
+/// v1 spelled "render this when the value is there, and take it back down when
+/// it isn't" as `.option().map(..)`. v2 has no such combinator and does not need
+/// one: [`AnyBundle`](crate::any::AnyBundle) already erases a bundle behind a
+/// component whose `on_replace` removes whatever the last one inserted, so the
+/// absent arm is just `().into_any()`.
+///
+/// This is the shape the whole view layer is built out of, so it is worth
+/// pinning that the two tiers compose rather than assuming it.
+///
+/// Note the plugin set. `AnyBundle`'s teardown goes through the v1
+/// [`CleanupRegistry`](crate::cleanup::CleanupRegistry), which
+/// [`ReactivePlugin`] does not install — so signal2 on its own can map *to* an
+/// `AnyBundle` but panics when one is replaced. An app running both tiers (as
+/// one mid-migration does) gets it from `ReactPlugin`.
+#[test]
+fn an_optional_source_can_add_and_remove_a_bundle() {
+    use crate::any::{AnyBundle, IntoAnyBundle};
+
+    let mut app = App::new();
+    app.add_plugins((ReactivePlugin, crate::cleanup::CleanupPlugin));
+    let world = app.world_mut();
+    let source = world.spawn(Source(1)).id();
+
+    let target = {
+        let mut commands = world.commands();
+        let signal = commands.signal::<Option<&Source>>().watch(source);
+        commands
+            .spawn(signal.map(|value: Option<&Source>| -> AnyBundle {
+                match value {
+                    Some(value) => Doubled(value.0 * 2).into_any(),
+                    None => ().into_any(),
+                }
+            }))
+            .id()
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(2)));
+
+    // Removing the source takes the rendered bundle back off.
+    world.entity_mut(source).remove::<Source>();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(target), None);
+
+    // And putting it back renders it again.
+    world.entity_mut(source).insert(Source(4));
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Doubled>(target), Some(&Doubled(8)));
 }

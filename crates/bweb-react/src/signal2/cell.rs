@@ -107,6 +107,20 @@ impl<T: Send + Sync + 'static> Cell<T> {
         self.entity
     }
 
+    /// A handle that does not keep the cell alive.
+    ///
+    /// For something that writes a cell without owning it — a
+    /// [`resource`](super::resource) scanner is the case this exists for. A
+    /// registry holding strong handles would make every cell it has ever seen
+    /// immortal; holding weak ones lets the expired handle be the signal that
+    /// the entry can go.
+    pub fn downgrade(&self) -> WeakCell<T> {
+        WeakCell {
+            entity: self.entity,
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
     fn value(&self) -> RwLockReadGuard<'_, T> {
         // A poisoned cell means a reader or writer panicked while holding the
         // lock, which says nothing about the value itself — and a widget whose
@@ -176,6 +190,35 @@ impl<T: Clone + Send + Sync + 'static> Cell<T> {
     /// [`get`](Cell::get) without the subscription.
     pub fn peek_cloned(&self) -> T {
         self.peek().clone()
+    }
+}
+
+/// A [`Cell`] handle that does not keep the cell alive.
+///
+/// Built by [`Cell::downgrade`]. [`upgrade`](Self::upgrade) returns `None` once
+/// the last strong handle has gone, which is also when the cell's entity is
+/// collected.
+pub struct WeakCell<T> {
+    entity: Entity,
+    inner: Weak<CellInner<T>>,
+}
+
+impl<T> Clone for WeakCell<T> {
+    fn clone(&self) -> Self {
+        Self {
+            entity: self.entity,
+            inner: Weak::clone(&self.inner),
+        }
+    }
+}
+
+impl<T> WeakCell<T> {
+    /// The cell, if anything still owns it.
+    pub fn upgrade(&self) -> Option<Cell<T>> {
+        Some(Cell {
+            entity: self.entity,
+            inner: self.inner.upgrade()?,
+        })
     }
 }
 

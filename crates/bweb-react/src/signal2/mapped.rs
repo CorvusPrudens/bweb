@@ -1,4 +1,8 @@
-use std::{any::TypeId, marker::PhantomData, sync::Mutex};
+use std::{
+    any::TypeId,
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 use bevy_ecs::{
     bundle::Bundle,
@@ -18,16 +22,88 @@ use crate::signal2::{
 
 pub struct MappedSignal<D: SignalData, O> {
     pub(crate) signal: SourceSignal<D>,
-    mapper: for<'w, 's> fn(D::Item<'w, 's>) -> O,
+    mapper: Mapper<D, O>,
 }
 
-type Mapper<D, O> = for<'w, 's> fn(<D as QueryData>::Item<'w, 's>) -> O;
+type MapperFn<D, O> = for<'w, 's> fn(<D as QueryData>::Item<'w, 's>) -> O;
+
+/// A mapper, in the two shapes a caller can supply one.
+///
+/// Kept as an enum rather than boxing everything because the plain-`fn` shape
+/// is what [`register_mapper`]'s sharing test is measuring, and it is the one
+/// the hot path wants: a `Ptr` is `Copy`, needs no allocation, and two
+/// subscribers using the same one really are using the same thing.
+enum Mapper<D: SignalData, O> {
+    Ptr(MapperFn<D, O>),
+    /// `Arc` rather than `Box` so a `MappedSignal` can be handed to more than
+    /// one entity — the subscription is built per insert, and each one needs
+    /// its own handle on the closure.
+    Boxed(BoxedMapper<D, O>),
+}
+
+type BoxedMapper<D, O> = Arc<dyn for<'w, 's> Fn(<D as QueryData>::Item<'w, 's>) -> O + Send + Sync>;
+
+impl<D: SignalData, O> Mapper<D, O> {
+    fn call<'w, 's>(&self, data: D::Item<'w, 's>) -> O {
+        match self {
+            Self::Ptr(mapper) => mapper(data),
+            Self::Boxed(mapper) => mapper(data),
+        }
+    }
+}
+
+/// A mapped signal holds no per-placement state — the subscription is built by
+/// the insertion hook — so one can be handed to any number of entities.
+impl<D: SignalData, O> Clone for MappedSignal<D, O> {
+    fn clone(&self) -> Self {
+        Self {
+            signal: self.signal.clone(),
+            mapper: self.mapper.clone(),
+        }
+    }
+}
+
+impl<D: SignalData, O> Clone for Mapper<D, O> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Ptr(mapper) => Self::Ptr(*mapper),
+            Self::Boxed(mapper) => Self::Boxed(Arc::clone(mapper)),
+        }
+    }
+}
 
 impl<D: SignalData> SourceSignal<D> {
-    pub fn map<O>(&self, mapper: Mapper<D, O>) -> MappedSignal<D, O> {
+    /// Map this signal through a plain function.
+    ///
+    /// The mapper cannot capture. That is not an oversight: a non-capturing
+    /// mapper is zero-sized, which is what lets every subscriber using it share
+    /// one instance. Reach for [`map_fn`](Self::map_fn) when the mapper needs to
+    /// close over something, and [`map_system`](Self::map_system) when it needs
+    /// `SystemParam`s as well.
+    pub fn map<O>(&self, mapper: MapperFn<D, O>) -> MappedSignal<D, O> {
         MappedSignal {
             signal: self.clone(),
-            mapper,
+            mapper: Mapper::Ptr(mapper),
+        }
+    }
+
+    /// [`map`](Self::map) with a closure that may capture.
+    ///
+    /// The closure is boxed once, when the signal is built, and shared by every
+    /// entity the resulting [`MappedSignal`] is inserted onto. What it costs
+    /// over [`map`](Self::map) is that allocation and an indirect call in place
+    /// of a direct one — nothing per change beyond that.
+    ///
+    /// Prefer this to [`map_system`](Self::map_system) when the mapper only
+    /// needs its captures: a mapper system is a whole registered system with a
+    /// `QueryState` of its own, and a capturing one cannot be shared.
+    pub fn map_fn<O, F>(&self, mapper: F) -> MappedSignal<D, O>
+    where
+        F: for<'w, 's> Fn(D::Item<'w, 's>) -> O + Send + Sync + 'static,
+    {
+        MappedSignal {
+            signal: self.clone(),
+            mapper: Mapper::Boxed(Arc::new(mapper)),
         }
     }
 }
@@ -62,7 +138,7 @@ where
                 .get::<MappedSignal<D, O>>(entity)
                 .expect("self should be accessible");
             let signal = mapped.signal.data.entity;
-            let mapper = mapped.mapper;
+            let mapper = mapped.mapper.clone();
 
             // Deferred rather than done inline: `watch` is itself a queued
             // command, so `Watching` may not have landed yet, and the initial
@@ -76,7 +152,7 @@ where
                     }
 
                     let closure: SubscriberClosure<D> = Box::new(move |data, mut ctx| {
-                        ctx.commands.entity(entity).insert(mapper(data));
+                        ctx.commands.entity(entity).insert(mapper.call(data));
                     });
 
                     dispatch_once::<D>(world, source, &closure);
