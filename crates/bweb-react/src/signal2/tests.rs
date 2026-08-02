@@ -9,7 +9,7 @@ use bevy_ecs::{prelude::*, system::SystemIdMarker};
 use crate::signal2::{
     REACTION_LIMIT, ReactivePlugin, RegisteredSignalSystem, SignalCtx, SignalData, SignalExt,
     SubscriberSet,
-    derived::{NodeLevel, NodeSources},
+    derived::{NodeLevel, NodeSources, NodeSubscribers},
     effect::Effect,
     list::{ListOf, ListSource, ReactiveList},
     run_reactive_schedule, settle_reactive,
@@ -1832,4 +1832,355 @@ fn nested_lists_settle() {
     for row in children(world, container) {
         assert_eq!(row_values(world, row), vec![10, 30]);
     }
+}
+
+/// How many derived nodes are subscribed to `cell`.
+fn cell_subscribers(world: &World, cell: Entity) -> usize {
+    world
+        .get::<NodeSubscribers>(cell)
+        .map_or(0, |subscribers| subscribers.0.len())
+}
+
+/// The whole point of a cell: the value is in the handle, so a writer can read
+/// back what it just wrote without waiting for a flush. A component-backed
+/// signal writes through `Commands` and would still be showing the old value
+/// here.
+#[test]
+fn a_cell_write_is_visible_immediately() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let cell = world.commands().cell(1);
+    assert_eq!(*cell.peek(), 1);
+
+    cell.set(2);
+    assert_eq!(*cell.peek(), 2, "no flush, no schedule run — still visible");
+
+    cell.update(|value| *value += 40);
+    assert_eq!(*cell.peek(), 42);
+
+    // And the entity behind it does not even have to exist yet.
+    world.flush();
+    assert_eq!(*cell.peek(), 42);
+}
+
+#[test]
+fn a_derived_node_reads_a_cell_without_a_change() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let node = {
+        let mut commands = world.commands();
+        let cell = commands.cell(21);
+        commands.derive(move |s| Ok(Sum(*cell.read(s) * 2)))
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(42)));
+}
+
+#[test]
+fn writing_a_cell_wakes_its_readers() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (cell, node) = {
+        let mut commands = world.commands();
+        let cell = commands.cell(1);
+        let node = commands.derive({
+            let cell = cell.clone();
+            move |s| Ok(Sum(*cell.read(s)))
+        });
+        (cell, node)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(1)));
+    assert_eq!(cell_subscribers(world, cell.entity()), 1);
+
+    cell.set(9);
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(9)));
+}
+
+/// A pass that marks nothing must still be cheap, and — more importantly — a
+/// cell nobody wrote must not wake anything.
+#[test]
+fn a_quiet_cell_wakes_nobody() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    let counter = runs.clone();
+
+    let cell = {
+        let mut commands = world.commands();
+        let cell = commands.cell(1);
+        commands.derive({
+            let cell = cell.clone();
+            move |s| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                Ok(Sum(*cell.read(s)))
+            }
+        });
+        cell
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    let settled = runs.load(Ordering::Relaxed);
+    for _ in 0..3 {
+        run_reactive_schedule(world);
+    }
+    assert_eq!(runs.load(Ordering::Relaxed), settled);
+
+    // A `write` guard that is never dereferenced mutably changes nothing, so it
+    // must not count as a write either.
+    drop(cell.write());
+    run_reactive_schedule(world);
+    assert_eq!(runs.load(Ordering::Relaxed), settled);
+}
+
+#[test]
+fn peeking_does_not_subscribe() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (cell, node) = {
+        let mut commands = world.commands();
+        let cell = commands.cell(1);
+        let node = commands.derive({
+            let cell = cell.clone();
+            move |_| Ok(Sum(*cell.peek()))
+        });
+        (cell, node)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(1)));
+    assert_eq!(cell_subscribers(world, cell.entity()), 0);
+
+    cell.set(9);
+    run_reactive_schedule(world);
+    assert_eq!(
+        world.get::<Sum>(node.entity()),
+        Some(&Sum(1)),
+        "an unrecorded read must not wake the node"
+    );
+}
+
+/// Two cells changing in one frame is the diamond case, and must collapse to a
+/// single evaluation exactly as two component sources do.
+#[test]
+fn two_cells_changing_evaluate_a_node_once() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    let counter = runs.clone();
+
+    let (left, right, node) = {
+        let mut commands = world.commands();
+        let left = commands.cell(1);
+        let right = commands.cell(10);
+        let node = {
+            let (left, right) = (left.clone(), right.clone());
+            commands.derive(move |s| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                Ok(Sum(*left.read(s) + *right.read(s)))
+            })
+        };
+        (left, right, node)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(11)));
+
+    let settled = runs.load(Ordering::Relaxed);
+    left.set(2);
+    right.set(20);
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(22)));
+    assert_eq!(runs.load(Ordering::Relaxed), settled + 1);
+}
+
+/// A cell is level zero, so a chain hanging off one has to level and settle in
+/// a single frame just like a chain off a component.
+#[test]
+fn a_chain_of_cell_readers_settles_in_one_frame() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (cell, first, second) = {
+        let mut commands = world.commands();
+        let cell = commands.cell(3);
+        let first = commands.derive({
+            let cell = cell.clone();
+            move |s| Ok(Left(*cell.read(s) * 2))
+        });
+        let second = commands.derive({
+            let first = first.clone();
+            move |s| Ok(Bottom(first.get(s)?.0 + 1))
+        });
+        (cell, first, second)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(level(world, &first), 1);
+    assert_eq!(level(world, &second), 2);
+    assert_eq!(world.get::<Bottom>(second.entity()), Some(&Bottom(7)));
+
+    cell.set(10);
+    let passes = settle_reactive(world);
+    assert_eq!(world.get::<Bottom>(second.entity()), Some(&Bottom(21)));
+    assert!(passes <= 3, "the chain took {passes} passes to settle");
+}
+
+#[test]
+fn an_effect_reads_a_cell() {
+    let mut app = app();
+    let world = app.world_mut();
+    world.init_resource::<EffectLog>();
+
+    let cell = {
+        let mut commands = world.commands();
+        let cell = commands.cell(3);
+        commands.spawn(Effect::new({
+            let cell = cell.clone();
+            move |_: In<Entity>, store: SignalStore, mut log: ResMut<EffectLog>| {
+                log.record(*cell.read(&store));
+            }
+        }));
+        cell
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(effect_log(world).values, vec![3]);
+
+    cell.set(4);
+    run_reactive_schedule(world);
+    assert_eq!(effect_log(world).values, vec![3, 4]);
+}
+
+/// Lazy tracking has to work the same way for cells: a branch that stops
+/// reading one must stop being woken by it.
+#[test]
+fn a_node_drops_the_cell_edges_it_stops_reading() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let read_left = Arc::new(AtomicBool::new(true));
+    let branch = read_left.clone();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let counter = runs.clone();
+
+    let (left, right, node) = {
+        let mut commands = world.commands();
+        let left = commands.cell(1);
+        let right = commands.cell(100);
+        let node = {
+            let (left, right) = (left.clone(), right.clone());
+            commands.derive(move |s| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                let value = if branch.load(Ordering::Relaxed) {
+                    *left.read(s)
+                } else {
+                    *right.read(s)
+                };
+                Ok(Sum(value))
+            })
+        };
+        (left, right, node)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(1)));
+    assert_eq!(cell_subscribers(world, left.entity()), 1);
+    assert_eq!(cell_subscribers(world, right.entity()), 0);
+
+    // Flip the branch, and poke the cell it is still reading to wake it.
+    read_left.store(false, Ordering::Relaxed);
+    left.set(2);
+    run_reactive_schedule(world);
+
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(100)));
+    assert_eq!(cell_subscribers(world, left.entity()), 0);
+    assert_eq!(cell_subscribers(world, right.entity()), 1);
+
+    let settled = runs.load(Ordering::Relaxed);
+    left.set(3);
+    run_reactive_schedule(world);
+    assert_eq!(
+        runs.load(Ordering::Relaxed),
+        settled,
+        "the abandoned cell must no longer wake the node"
+    );
+
+    right.set(200);
+    run_reactive_schedule(world);
+    assert_eq!(world.get::<Sum>(node.entity()), Some(&Sum(200)));
+}
+
+#[test]
+fn a_despawned_node_unsubscribes_from_its_cell() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    let (cell, node) = {
+        let mut commands = world.commands();
+        let cell = commands.cell(1);
+        let node = commands.derive({
+            let cell = cell.clone();
+            move |s| Ok(Sum(*cell.read(s)))
+        });
+        (cell, node)
+    };
+    world.flush();
+    run_reactive_schedule(world);
+    assert_eq!(cell_subscribers(world, cell.entity()), 1);
+
+    world.despawn(node.entity());
+    world.flush();
+    assert_eq!(cell_subscribers(world, cell.entity()), 0);
+
+    // And the cell must still be usable afterwards.
+    cell.set(9);
+    run_reactive_schedule(world);
+    assert_eq!(*cell.peek(), 9);
+}
+
+/// The registry holds cells weakly, so dropping the last handle is what frees
+/// the entity standing in for it.
+#[test]
+fn dropping_the_last_handle_collects_the_cell() {
+    let mut app = app();
+    let world = app.world_mut();
+
+    // Something to write, since the sweep is gated on a write happening
+    // somewhere — which is what keeps a quiet frame from walking the registry.
+    let keepalive = world.commands().cell(0);
+
+    let cell = world.commands().cell(1);
+    let entity = cell.entity();
+    let clone = cell.clone();
+    world.flush();
+    run_reactive_schedule(world);
+    assert!(world.get_entity(entity).is_ok());
+
+    drop(clone);
+    keepalive.set(1);
+    run_reactive_schedule(world);
+    assert!(
+        world.get_entity(entity).is_ok(),
+        "a cell with a live handle must survive"
+    );
+
+    drop(cell);
+    keepalive.set(2);
+    run_reactive_schedule(world);
+    assert!(world.get_entity(entity).is_err());
 }

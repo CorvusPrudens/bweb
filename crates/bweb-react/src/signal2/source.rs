@@ -259,7 +259,17 @@ impl SignalStore<'_, '_> {
         D: SignalData,
         for<'w, 's> D::Item<'w, 's>: Copy,
     {
-        self.reads.buffer().push((signal, subscribe_derived::<D>));
+        self.record_at(signal, subscribe_derived::<D>);
+    }
+
+    /// [`record`](Self::record) for a source that supplies its own way of
+    /// subscribing, rather than having one picked from `D`.
+    ///
+    /// A [`Cell`](crate::signal2::cell::Cell) has no `D` to pick from: its value
+    /// is in its handle, so there is no component to filter on and no
+    /// [`SubscriberSet`] to join.
+    pub(crate) fn record_at(&self, signal: Entity, subscribe: SubscribeFn) {
+        self.reads.buffer().push((signal, subscribe));
     }
 }
 

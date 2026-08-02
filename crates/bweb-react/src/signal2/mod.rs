@@ -15,6 +15,7 @@ use bevy_ecs::{
 };
 use bevy_platform::collections::{HashMap, HashSet};
 
+pub mod cell;
 pub mod derived;
 pub mod effect;
 pub mod list;
@@ -28,6 +29,7 @@ use smallvec::SmallVec;
 use source::SourceSignal;
 
 use crate::signal2::{
+    cell::{Cell, CellRegistry, drain_dirty_cells},
     derived::{PendingNodes, run_derived_nodes},
     effect::run_pending_effects,
     list::{ListSource, ReactiveList},
@@ -40,6 +42,7 @@ impl Plugin for ReactivePlugin {
     fn build(&self, app: &mut bevy_app::App) {
         app.init_resource::<ReactiveSystems>()
             .init_resource::<PendingNodes>()
+            .init_resource::<CellRegistry>()
             .init_resource::<SharedSignalSystems>()
             // Before `InnerReactiveSystems`, whose `FromWorld` initializes a
             // system that reads it.
@@ -426,6 +429,18 @@ pub trait SignalExt<'w, 's> {
         F: Fn(&source::SignalStore) -> Result<O, ReactError> + Send + Sync + 'static,
         O: Component;
 
+    /// Build a [`Cell`]: a signal whose value lives in the handle rather than
+    /// in a component, so it can be read and written from anywhere without a
+    /// world and without waiting for a flush.
+    ///
+    /// This is what local view state wants — a focus flag, a drag offset, a
+    /// fetch's in-flight bool. Anything the rest of the ECS also reads should
+    /// be a component and an ordinary [`signal`](SignalExt::signal) instead.
+    #[must_use]
+    fn cell<T>(&mut self, value: T) -> Cell<T>
+    where
+        T: Send + Sync + 'static;
+
     /// Build a keyed list over a collection signal.
     ///
     /// Nothing here needs the queue — the returned component is inert until it
@@ -467,6 +482,13 @@ impl<'w, 's> SignalExt<'w, 's> for Commands<'w, 's> {
         O: Component,
     {
         derived::spawn_derive(self, eval)
+    }
+
+    fn cell<T>(&mut self, value: T) -> Cell<T>
+    where
+        T: Send + Sync + 'static,
+    {
+        Cell::new(self, value)
     }
 }
 
@@ -578,6 +600,11 @@ pub fn settle_reactive(world: &mut World) -> usize {
         work.dispatched = 0;
         let pending = core::mem::take(&mut world.resource_mut::<PendingNodes>().0);
         work.dirty.extend(pending);
+
+        // Before the scans rather than alongside them: a cell write has already
+        // happened by the time anyone can see it, so the nodes it wakes belong
+        // in this pass's dirty list, not the next one's.
+        drain_dirty_cells(world, &mut work);
 
         world.resource_scope(|world, mut inner: Mut<InnerReactiveSystems>| {
             let inner = &mut *inner;
