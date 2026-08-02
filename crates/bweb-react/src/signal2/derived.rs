@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 
 use crate::signal2::{
     ReactError, ReactiveWork,
-    source::{SignalStore, SourceSignal, UnsubscribeFn, Watching},
+    source::{Read, SignalStore, SourceSignal, UnsubscribeFn, Watching},
 };
 
 /// Derived nodes created since the last pass.
@@ -46,6 +46,24 @@ pub(crate) struct DerivedNode {
 }
 
 impl DerivedNode {
+    /// A node whose entire evaluation is handing itself to the effect step.
+    ///
+    /// An effect is not a derived node in any interesting sense — it has no
+    /// value and nothing subscribes to it — but it is marked by the same fn
+    /// pointer, so its mark lands in the same dirty list and something has to
+    /// pick it out. Coming through here is what gives an effect dedup, level
+    /// ordering, the [`PendingNodes`] seed for its first run, and the edge
+    /// teardown in [`DerivedNode::on_replace`], none of which it would
+    /// otherwise have.
+    ///
+    /// It cannot simply *be* evaluated here: an effect is an arbitrary system
+    /// and wants `&mut World`, which the derived pass does not have.
+    pub(crate) fn effect() -> Self {
+        Self {
+            eval: Box::new(|ctx: DerivedContext| ctx.work.queue_effect(ctx.node)),
+        }
+    }
+
     fn on_add(mut world: DeferredWorld, ctx: HookContext) {
         world.resource_mut::<PendingNodes>().0.push(ctx.entity);
     }
@@ -199,6 +217,77 @@ pub(crate) fn unsubscribe_source(world: &mut World, node: Entity, signal: Entity
     (dropped.unsubscribe)(world, dropped.target, node);
 }
 
+/// The edge changes implied by a node's latest reads, or `None` if the set it
+/// reads has not moved.
+///
+/// A node that took the same path through its body reports the same reads in
+/// the same order, which is the overwhelmingly common case and the one worth
+/// spending a branch on: comparing the two lists elementwise settles it in one
+/// pass, where the diff below is quadratic in the number of inputs. Wiring an
+/// edge costs a handful of random world lookups, so this path has to stay off
+/// the steady state entirely.
+pub(crate) fn diff_reads(
+    known: Option<&NodeSources>,
+    reads: &[Read],
+) -> Option<(Vec<Read>, Vec<Entity>)> {
+    let unchanged = known.is_some_and(|known| {
+        known.0.len() == reads.len()
+            && known
+                .0
+                .iter()
+                .zip(reads.iter())
+                .all(|(source, (signal, _))| source.signal == *signal)
+    });
+    if unchanged {
+        return None;
+    }
+
+    let fresh = reads
+        .iter()
+        .copied()
+        .filter(|(signal, _)| !known.is_some_and(|known| known.contains(*signal)))
+        .collect::<Vec<_>>();
+
+    // A read this node used to do and didn't this time. Dropping the edge is
+    // what keeps a branch that took the other arm from being woken by an input
+    // it no longer looks at.
+    let stale = known.map_or_else(Vec::new, |known| {
+        known
+            .0
+            .iter()
+            .filter(|source| !reads.iter().any(|(signal, _)| *signal == source.signal))
+            .map(|source| source.signal)
+            .collect::<Vec<_>>()
+    });
+
+    // Reads can be reordered without the set changing, in which case there is
+    // nothing to wire either way.
+    (!fresh.is_empty() || !stale.is_empty()).then_some((fresh, stale))
+}
+
+/// Wire a node's new edges and drop the ones it stopped reading.
+pub(crate) fn apply_edges(world: &mut World, node: Entity, fresh: Vec<Read>, stale: Vec<Entity>) {
+    // Stale first: an edge being replaced by one pointing at the same target
+    // must release the shared mark before the new one claims it, or the release
+    // would take the new mark with it.
+    for signal in stale {
+        unsubscribe_source(world, node, signal);
+    }
+    for (signal, subscribe) in fresh {
+        subscribe(world, signal, node);
+    }
+}
+
+/// [`diff_reads`] and [`apply_edges`] in one, for a caller that already holds
+/// `&mut World` and so has no reason to defer the wiring.
+pub(crate) fn resubscribe(world: &mut World, node: Entity, reads: &[Read]) {
+    let Some((fresh, stale)) = diff_reads(world.get::<NodeSources>(node), reads) else {
+        return;
+    };
+
+    apply_edges(world, node, fresh, stale);
+}
+
 /// Drop every edge `node` holds, for the case where the node itself is going
 /// away and there is no `NodeSources` left to diff against.
 fn unsubscribe_all(world: &mut World, node: Entity, sources: &[NodeSource]) {
@@ -253,58 +342,11 @@ where
         let reads = ctx.store.take_reads();
 
         // The node's dependencies are whatever it just read, so the edge set is
-        // the diff between that and what it already has.
-        //
-        // A node that took the same path through its closure reports the same
-        // reads in the same order, which is the overwhelmingly common case and
-        // the one worth spending a branch on: comparing the two lists elementwise
-        // settles it in one pass, where the diff below is quadratic in the number
-        // of inputs. Wiring an edge costs a handful of random world lookups, so
-        // this path has to stay off the steady state entirely.
-        let known = ctx.sources;
-        let unchanged = known.is_some_and(|known| {
-            known.0.len() == reads.len()
-                && known
-                    .0
-                    .iter()
-                    .zip(reads.iter())
-                    .all(|(source, (signal, _))| source.signal == *signal)
-        });
-
-        if !unchanged {
-            let fresh = reads
-                .iter()
-                .copied()
-                .filter(|(signal, _)| !known.is_some_and(|known| known.contains(*signal)))
-                .collect::<Vec<_>>();
-
-            // A read this node used to do and didn't this time. Dropping the edge
-            // is what keeps a branch that took the other arm from being woken by
-            // an input it no longer looks at.
-            let stale = known.map_or_else(Vec::new, |known| {
-                known
-                    .0
-                    .iter()
-                    .filter(|source| !reads.iter().any(|(signal, _)| *signal == source.signal))
-                    .map(|source| source.signal)
-                    .collect::<Vec<_>>()
-            });
-
-            // Reads can be reordered without the set changing, in which case
-            // there is nothing to wire either way.
-            if !fresh.is_empty() || !stale.is_empty() {
-                ctx.commands.queue(move |world: &mut World| {
-                    // Stale first: an edge being replaced by one pointing at the
-                    // same target must release the shared mark before the new one
-                    // claims it, or the release would take the new mark with it.
-                    for signal in stale {
-                        unsubscribe_source(world, node, signal);
-                    }
-                    for (signal, subscribe) in fresh {
-                        subscribe(world, signal, node);
-                    }
-                });
-            }
+        // the diff between that and what it already has. Deferred rather than
+        // applied here because the pass holds nothing but `&World`.
+        if let Some((fresh, stale)) = diff_reads(ctx.sources, &reads) {
+            ctx.commands
+                .queue(move |world: &mut World| apply_edges(world, node, fresh, stale));
         }
 
         match value {

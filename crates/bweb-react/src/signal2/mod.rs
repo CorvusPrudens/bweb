@@ -9,12 +9,15 @@ use bevy_ecs::{
         QueryAccessError, QueryData, QueryEntityError, QueryFilter, ReadOnlyQueryData,
         ReleaseStateQueryData,
     },
+    relationship::Relationship,
     system::{BoxedReadOnlySystem, InMut},
     world::DeferredWorld,
 };
 use bevy_platform::collections::{HashMap, HashSet};
 
 pub mod derived;
+pub mod effect;
+pub mod list;
 pub mod mapped;
 pub mod source;
 
@@ -26,7 +29,9 @@ use source::SourceSignal;
 
 use crate::signal2::{
     derived::{PendingNodes, run_derived_nodes},
-    source::SourceSignalView,
+    effect::run_pending_effects,
+    list::{ListSource, ReactiveList},
+    source::{SignalReads, SourceSignalView},
 };
 
 pub struct ReactivePlugin;
@@ -36,6 +41,9 @@ impl Plugin for ReactivePlugin {
         app.init_resource::<ReactiveSystems>()
             .init_resource::<PendingNodes>()
             .init_resource::<SharedSignalSystems>()
+            // Before `InnerReactiveSystems`, whose `FromWorld` initializes a
+            // system that reads it.
+            .init_resource::<SignalReads>()
             .init_resource::<InnerReactiveSystems>()
             .add_systems(PostUpdate, run_reactive_schedule);
     }
@@ -74,6 +82,9 @@ pub struct ReactiveWork {
     dirty: Vec<Entity>,
     /// Reused scratch for deduplicating `dirty`.
     seen: EntityHashSet,
+    /// Effects marked this pass, held back for the exclusive step that runs
+    /// them once the read-only passes are done.
+    effects: Vec<Entity>,
     /// Subscriber closures dispatched this pass. Zero means the graph settled.
     dispatched: usize,
 }
@@ -85,6 +96,18 @@ impl ReactiveWork {
     /// changed inputs still evaluates once.
     pub fn mark_dirty(&mut self, node: Entity) {
         self.dirty.push(node);
+    }
+
+    /// Hand an effect to the exclusive step at the end of this pass.
+    ///
+    /// Called from the derived pass, which has already deduplicated and level
+    /// sorted, so what arrives here is each effect once in dependency order.
+    pub(crate) fn queue_effect(&mut self, node: Entity) {
+        self.effects.push(node);
+    }
+
+    pub(crate) fn take_effects(&mut self) -> Vec<Entity> {
+        core::mem::take(&mut self.effects)
     }
 
     /// Subscriber closures dispatched during the pass just run.
@@ -402,6 +425,30 @@ pub trait SignalExt<'w, 's> {
     where
         F: Fn(&source::SignalStore) -> Result<O, ReactError> + Send + Sync + 'static,
         O: Component;
+
+    /// Build a keyed list over a collection signal.
+    ///
+    /// Nothing here needs the queue — the returned component is inert until it
+    /// is placed on a container — so this is only [`ReactiveList::new`] spelled
+    /// to match the rest of the builders.
+    #[must_use]
+    fn list<R, S, K, F, G, B>(
+        &mut self,
+        source: SourceSignal<&'static S>,
+        key: F,
+        row: G,
+    ) -> ReactiveList<R>
+    where
+        R: Relationship,
+        S: Component + ListSource,
+        S::Item: Clone + PartialEq + Send + Sync + 'static,
+        K: Eq + core::hash::Hash + Clone + Send + Sync + 'static,
+        F: Fn(&S::Item) -> K + Send + Sync + 'static,
+        G: Fn(&S::Item, &mut Commands) -> B + Send + Sync + 'static,
+        B: Bundle,
+    {
+        ReactiveList::new(source, key, row)
+    }
 }
 
 impl<'w, 's> SignalExt<'w, 's> for Commands<'w, 's> {
@@ -544,6 +591,11 @@ pub fn settle_reactive(world: &mut World) -> usize {
                 errors.push(e);
             }
         });
+
+        // Outside the scope, and last: effects are arbitrary systems, so they
+        // run only once every read-only pass has finished and flushed what it
+        // wrote.
+        run_pending_effects(world, &mut work);
 
         passes += 1;
 

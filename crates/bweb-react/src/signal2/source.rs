@@ -1,10 +1,14 @@
-use std::{cell::RefCell, marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use bevy_ecs::{prelude::*, system::SystemParam};
 
 use crate::signal2::{
     ReactError, ReactiveSystems, SignalData, SubscriberSet,
     derived::{NodeLevel, NodeSource, NodeSources, NodeSubscribers, PendingNodes, raise_level},
+    effect::reads_post_flush,
 };
 
 pub struct SourceSignal<D> {
@@ -133,7 +137,11 @@ where
     // the command queue as an upstream node's output. This is the same debt a
     // mapped signal settles inline when it attaches, except a derived node cannot
     // pay it until after it has run. It re-runs once instead.
-    world.resource_mut::<PendingNodes>().0.push(node);
+    //
+    // An effect has nothing to pay: it already reads post-flush.
+    if !reads_post_flush(world, node) {
+        world.resource_mut::<PendingNodes>().0.push(node);
+    }
 
     // Two signals can point at the same entity. They are distinct edges, but they
     // share one mark: a second closure would only mark the node twice for one
@@ -191,6 +199,40 @@ where
     }
 }
 
+/// One signal a node touched, paired with the way to subscribe to it.
+pub(crate) type Read = (Entity, SubscribeFn);
+
+/// Signals read by the evaluation currently in flight.
+///
+/// This started life as a `Local` on [`SignalStore`], which is the right home
+/// while every reader is a derived closure sharing the pass's one store. An
+/// effect is a whole system with a store of its own, and whoever is driving the
+/// evaluation has to harvest the reads afterwards — which it cannot do from
+/// inside another system's params. So the buffer lives out here instead.
+///
+/// One buffer is enough because evaluation is strictly sequential: a node is
+/// cleared, run, and harvested before the next one starts.
+#[derive(Resource, Default)]
+pub(crate) struct SignalReads(Mutex<Vec<Read>>);
+
+impl SignalReads {
+    /// A poisoned buffer means a node panicked mid-evaluation, which says
+    /// nothing about the reads recorded before it — and a signal graph that
+    /// stops tracking is worse than one carrying a stale entry, so the lock is
+    /// recovered rather than propagated.
+    fn buffer(&self) -> std::sync::MutexGuard<'_, Vec<Read>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn clear(&self) {
+        self.buffer().clear();
+    }
+
+    pub(crate) fn take(&self) -> Vec<Read> {
+        core::mem::take(&mut *self.buffer())
+    }
+}
+
 /// Read access to signal values, plus the read-tracking that gives derived
 /// signals their subscriptions.
 ///
@@ -200,16 +242,16 @@ where
 #[derive(SystemParam)]
 pub struct SignalStore<'w, 's> {
     values: Query<'w, 's, EntityRef<'static>>,
-    reads: Local<'s, RefCell<Vec<(Entity, SubscribeFn)>>>,
+    reads: Res<'w, SignalReads>,
 }
 
 impl SignalStore<'_, '_> {
     pub(crate) fn clear_reads(&self) {
-        self.reads.borrow_mut().clear();
+        self.reads.clear();
     }
 
-    pub(crate) fn take_reads(&self) -> Vec<(Entity, SubscribeFn)> {
-        core::mem::take(&mut *self.reads.borrow_mut())
+    pub(crate) fn take_reads(&self) -> Vec<Read> {
+        self.reads.take()
     }
 
     fn record<D>(&self, signal: Entity)
@@ -217,9 +259,7 @@ impl SignalStore<'_, '_> {
         D: SignalData,
         for<'w, 's> D::Item<'w, 's>: Copy,
     {
-        self.reads
-            .borrow_mut()
-            .push((signal, subscribe_derived::<D>));
+        self.reads.buffer().push((signal, subscribe_derived::<D>));
     }
 }
 
