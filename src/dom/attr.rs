@@ -444,6 +444,9 @@ enum_attribute!(
 );
 enum_attribute!(Loading, "loading", Eager, "eager", Lazy, "lazy");
 enum_attribute!(
+    Popover, "popover", Auto, "auto", Manual, "manual", Hint, "hint"
+);
+enum_attribute!(
     Method, "method", Post, "post", Get, "get", Dialog, "dialog", Submit, "submit"
 );
 enum_attribute!(
