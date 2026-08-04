@@ -87,12 +87,12 @@ impl<T> SignalTick for SignalInner<T> {
 pub struct SignalReadGuard<'a, T>(RwLockReadGuard<'a, Option<T>>);
 
 impl<'a, T> SignalReadGuard<'a, T> {
-    fn new(guard: RwLockReadGuard<'a, Option<T>>) -> Self {
+    fn new(guard: RwLockReadGuard<'a, Option<T>>) -> Option<Self> {
         if guard.is_none() {
-            panic!("Attempted to create a signal read guard for a signal without a value");
+            return None;
         }
 
-        Self(guard)
+        Some(Self(guard))
     }
 }
 
@@ -112,12 +112,12 @@ pub struct SignalWriteGuard<'a, T> {
 }
 
 impl<'a, T> SignalWriteGuard<'a, T> {
-    fn new(guard: RwLockWriteGuard<'a, Option<T>>, tick: &'a AtomicU32) -> Self {
+    fn new(guard: RwLockWriteGuard<'a, Option<T>>, tick: &'a AtomicU32) -> Option<Self> {
         if guard.is_none() {
-            panic!("Attempted to create a signal read guard for a signal without a value");
+            return None;
         }
 
-        Self { data: guard, tick }
+        Some(Self { data: guard, tick })
     }
 }
 
@@ -150,7 +150,7 @@ impl<T> traits::Read for SignalInner<T> {
     type Value = T;
 
     fn try_read(&self) -> Option<Self::Guard<'_>> {
-        self.value.read().ok().map(SignalReadGuard::new)
+        self.value.read().ok().and_then(SignalReadGuard::new)
     }
 }
 
@@ -166,7 +166,7 @@ impl<T> traits::Write for SignalInner<T> {
         self.value
             .write()
             .ok()
-            .map(|g| SignalWriteGuard::new(g, &self.tick))
+            .and_then(|g| SignalWriteGuard::new(g, &self.tick))
     }
 }
 
