@@ -5,6 +5,7 @@ use bevy_ecs::prelude::*;
 pub mod attr;
 pub mod class;
 pub mod events;
+pub mod focus;
 pub mod html;
 pub mod prop;
 pub mod util;
@@ -307,6 +308,7 @@ pub mod prelude {
     pub use super::attr;
     pub use super::class::*;
     pub use super::events::*;
+    pub use super::focus::*;
     pub use super::html::NodeLookup;
     pub use super::html::{elements::*, svg::*, *};
     pub use super::prop;

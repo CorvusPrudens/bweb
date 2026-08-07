@@ -47,6 +47,8 @@ features = [
     "Url",
     "Element",
     "DomRect",
+    "FocusOptions",
+    "NodeList",
     "HtmlElement",
     "HtmlInputElement",
     "HtmlTextAreaElement",
