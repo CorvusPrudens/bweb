@@ -180,6 +180,9 @@ attribute! {Lang, "lang"}
 attribute! {ViewBox, "viewBox"}
 attribute! {Xmlns, "xmlns"}
 attribute! {Fill, "fill"}
+attribute! {Offset, "offset"}
+attribute! {GradientUnits, "gradientUnits"}
+attribute! {GradientTransform, "gradientTransform"}
 attribute! {Type, "type"}
 attribute! {Accept, "accept"}
 attribute! {AccessKey, "accesskey"}
