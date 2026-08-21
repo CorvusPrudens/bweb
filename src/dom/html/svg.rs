@@ -73,3 +73,18 @@ pub struct Svg;
 #[cfg_attr(feature = "debug", derive(Debug))]
 #[require(SvgElementName("path"))]
 pub struct Path;
+
+#[derive(Default, Component, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[require(SvgElementName("defs"))]
+pub struct Defs;
+
+#[derive(Default, Component, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[require(SvgElementName("linearGradient"))]
+pub struct LinearGradient;
+
+#[derive(Default, Component, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[require(SvgElementName("stop"))]
+pub struct Stop;
