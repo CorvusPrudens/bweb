@@ -16,7 +16,7 @@ impl Plugin for PropPlugin {
                 Selected::resolve_props,
                 TextContent::resolve_props,
             )
-                .after(DomSystems::Insert)
+                .after(DomSystems::Reparent)
                 .before(DomSystems::Attach),
         );
     }
