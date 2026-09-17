@@ -2,6 +2,7 @@ use crate::js_err::JsErr;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
+pub mod animate;
 pub mod attr;
 pub mod class;
 pub mod events;
@@ -305,6 +306,7 @@ fn longest_increasing_subsequence(seq: &[usize]) -> Vec<usize> {
 }
 
 pub mod prelude {
+    pub use super::animate::*;
     pub use super::attr;
     pub use super::class::*;
     pub use super::events::*;

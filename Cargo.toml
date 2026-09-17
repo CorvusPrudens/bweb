@@ -73,4 +73,5 @@ features = [
     "SubmitEvent",
     "AddEventListenerOptions",
     "Performance",
+    "Animation",
 ]
