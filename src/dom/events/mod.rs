@@ -269,6 +269,7 @@ pub mod ev {
     handler! { load, "load", web_sys::Event }
     handler! { error, "error", web_sys::Event }
     handler! { drag_start, "dragstart", web_sys::DragEvent }
+    handler! { resize, "resize", web_sys::Event }
 }
 
 #[derive(Component)]
