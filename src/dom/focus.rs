@@ -20,6 +20,8 @@ impl FocusableDescendants for web_sys::Element {
         Ok((0..list.length())
             .filter_map(|i| list.get(i))
             .filter_map(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+            // make sure to skip dom nodes that aren't rendered
+            .filter(|element| element.get_client_rects().length() > 0)
             .collect())
     }
 }

@@ -45,6 +45,7 @@ features = [
     "Url",
     "Element",
     "DomRect",
+    "DomRectList",
     "FocusOptions",
     "NodeList",
     "HtmlElement",
