@@ -208,6 +208,23 @@ impl<'w, 's> Navigator<'w, 's> {
 
         Ok(())
     }
+
+    /// Change the url without routing.
+    pub fn replace_url(&mut self, href: &str) -> Result<()> {
+        let base = self.window.location().href().js_err()?;
+        let href = web_sys::Url::new_with_base(href, &base).js_err()?.href();
+
+        self.window
+            .history()
+            .js_err()?
+            .replace_state_with_url(&JsValue::NULL, "", Some(&href))
+            .js_err()?;
+        self.commands.queue(move |world: &mut World| {
+            world.resource_mut::<NavigationGuard>().current_href = href;
+        });
+
+        Ok(())
+    }
 }
 
 /// Central navigation choke point. Every navigation resolves through here:
