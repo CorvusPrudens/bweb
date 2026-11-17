@@ -36,6 +36,7 @@ impl Plugin for RouterPlugin {
                 ),
             )
             .init_resource::<RouteParams>()
+            .init_resource::<RouterBase>()
             .init_resource::<NavigationGuard>()
             .add_observer(on_proceed)
             .add_observer(on_cancel)
@@ -49,6 +50,51 @@ impl Plugin for RouterPlugin {
             })
             .run_if(resource_changed::<Pathname>),
         );
+    }
+}
+
+/// A path prefix for the app when serving from a specific page.
+///
+/// By default, this resource contains an empty string. To override it,
+/// insert a custom one before `Startup`.
+#[derive(Resource, Default, Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+pub struct RouterBase(Cow<'static, str>);
+
+impl RouterBase {
+    /// `base` should be an absolute path with no trailing slash (e.g. `/app`).
+    pub fn new(base: impl Into<Cow<'static, str>>) -> Self {
+        let base = base.into();
+        debug_assert!(base.is_empty() || (base.starts_with('/') && !base.ends_with('/')));
+        Self(base)
+    }
+
+    /// The route path for `pathname`, or `None` when it lies outside the base.
+    pub fn strip<'a>(&self, pathname: &'a str) -> Option<&'a str> {
+        if self.0.is_empty() {
+            return Some(pathname);
+        }
+        match pathname.strip_prefix(self.0.as_ref())? {
+            "" => Some("/"),
+            rest if rest.starts_with('/') => Some(rest),
+            _ => None,
+        }
+    }
+
+    /// The route path of `url`, or `None` when it is on another origin or
+    /// outside the base.
+    fn route_path(&self, url: &web_sys::Url, origin: &str) -> Option<String> {
+        if url.origin() != origin {
+            return None;
+        }
+        self.strip(&url.pathname()).map(str::to_owned)
+    }
+
+    fn own_path(&self, pathname: String) -> String {
+        match self.strip(&pathname) {
+            Some(path) => path.to_owned(),
+            None => pathname,
+        }
     }
 }
 
@@ -74,6 +120,7 @@ impl Pathname {
 
 fn initialize_router(
     window: Single<(Entity, &Window)>,
+    router_base: Res<RouterBase>,
     mut guard: ResMut<NavigationGuard>,
     mut commands: Commands,
 ) -> Result {
@@ -84,16 +131,14 @@ fn initialize_router(
         ev::pop_state(
             |_: Ev<web_sys::PopStateEvent>,
              window: Single<&Window>,
+             router_base: Res<RouterBase>,
              mut commands: Commands|
              -> Result {
                 let base = window.location().href().js_err()?;
                 let url = web_sys::Url::new(&base).js_err()?;
                 let new_href = url.href();
-                let new_path = url.pathname();
+                let new_path = router_base.own_path(url.pathname());
 
-                // The browser has already moved history; defer the decision to
-                // the guard, which either commits or parks it and re-pushes our
-                // prior location so the address bar stays honest.
                 commands.queue(move |world: &mut World| resolve_pop(world, new_href, new_path));
 
                 Ok(())
@@ -104,7 +149,7 @@ fn initialize_router(
     let location = window.location();
     let base = location.href().js_err()?;
     let url = web_sys::Url::new(&base).js_err()?;
-    let pathname = url.pathname();
+    let pathname = router_base.own_path(url.pathname());
 
     guard.current_href = base;
 
@@ -133,30 +178,34 @@ fn hook_into_anchors(
     >,
     events: Query<Entity, With<RouterLink>>,
     window: Single<&Window>,
+    router_base: Res<RouterBase>,
     mut commands: Commands,
 ) -> Result {
     let location = window.location();
     let base = location.href().js_err()?;
+    let origin = location.origin().js_err()?;
 
     for (entity, href, handlers, has_download, target) in &anchors {
+        // an earlier href's handler would route to the old target
+        if let Some(handler) = handlers
+            .iter()
+            .flat_map(|h| h.iter())
+            .find_map(|h| events.get(h).ok())
+        {
+            commands.entity(handler).despawn();
+        }
+
         let absolute = web_sys::Url::new(href).is_ok();
         if absolute || has_download || target.is_some_and(|t| t.as_ref() == "_blank") {
-            // if absolute, remove potential dangling handler
-            if let Some(handler) = handlers
-                .iter()
-                .flat_map(|h| h.iter())
-                .find_map(|h| events.get(h).ok())
-            {
-                commands.entity(handler).despawn();
-            }
-
             // no need to intercept
             continue;
         }
 
         let url = web_sys::Url::new_with_base(href, &base).js_err()?;
+        let Some(path) = router_base.route_path(&url, &origin) else {
+            continue;
+        };
         let href = url.href();
-        let path = url.pathname();
 
         commands.spawn((
             RouterLink,
@@ -180,6 +229,7 @@ fn hook_into_anchors(
 #[derive(SystemParam)]
 pub struct Navigator<'w, 's> {
     window: Single<'w, 's, &'static Window>,
+    base: Res<'w, RouterBase>,
     commands: Commands<'w, 's>,
 }
 
@@ -202,9 +252,35 @@ impl<'w, 's> Navigator<'w, 's> {
         }
 
         let url = web_sys::Url::new_with_base(href, &base).js_err()?;
-        // Route through the guard rather than committing directly, so unsaved
-        // work can veto or defer the navigation.
-        request_push(&mut self.commands, url.href(), url.pathname());
+        let location = self.window.location();
+        let Some(path) = self.base.route_path(&url, &location.origin().js_err()?) else {
+            // another page on this origin outside of this app
+            return location.assign(&url.href()).js_err();
+        };
+
+        request_push(&mut self.commands, url.href(), path);
+
+        Ok(())
+    }
+
+    /// Navigate in place of the current history entry, so Back skips it.
+    /// Blockers are ignored.
+    pub fn replace(&mut self, href: &str) -> Result<()> {
+        let location = self.window.location();
+        let base = location.href().js_err()?;
+        let url = web_sys::Url::new_with_base(href, &base).js_err()?;
+        let href = url.href();
+        let Some(path) = self.base.route_path(&url, &location.origin().js_err()?) else {
+            return location.replace(&href).js_err();
+        };
+
+        self.window
+            .history()
+            .js_err()?
+            .replace_state_with_url(&JsValue::NULL, "", Some(&href))
+            .js_err()?;
+        self.commands
+            .queue(move |world: &mut World| commit_state(world, &href, &path));
 
         Ok(())
     }
@@ -813,6 +889,17 @@ mod test {
                 params: HashMap::from_iter([(String::from("param"), String::from("coolio"))])
             }
         );
+    }
+
+    #[test]
+    fn test_base() {
+        let base = RouterBase::new("/app");
+        assert_eq!(base.strip("/app"), Some("/"));
+        assert_eq!(base.strip("/app/"), Some("/"));
+        assert_eq!(base.strip("/app/help/x"), Some("/help/x"));
+        assert_eq!(base.strip("/apple"), None);
+        assert_eq!(base.strip("/garden/x"), None);
+        assert_eq!(RouterBase::default().strip("/garden"), Some("/garden"));
     }
 
     #[test]
