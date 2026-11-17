@@ -1,7 +1,9 @@
 use bevy_app::prelude::*;
 use bevy_ecs::{
+    lifecycle::HookContext,
     prelude::*,
     system::{RegisteredSystemError, SystemChangeTick, SystemId},
+    world::DeferredWorld,
 };
 use std::{
     any::Any,
@@ -41,9 +43,21 @@ pub struct SignalState {
 }
 
 #[derive(Component)]
+#[component(on_replace = Self::on_replace_hook)]
 pub struct SignalStateContainer(pub Option<SignalState>);
 
 impl SignalStateContainer {
+    fn on_replace_hook(mut world: DeferredWorld, context: HookContext) {
+        let Some(system) = world
+            .get::<Self>(context.entity)
+            .and_then(|container| container.0.as_ref())
+            .map(|state| state.system)
+        else {
+            return;
+        };
+        world.commands().unregister_system(system);
+    }
+
     pub fn new(system: SignalSystemId, outputs: SignalOutputs) -> Self {
         Self(Some(SignalState::new(system, outputs)))
     }
